@@ -69,7 +69,7 @@ class ServerUtils(networkType: NetworkType) {
   ): Try[AVector[Tx]] = {
     Right(
       blockFlow
-        .getPool(chainIndex)
+        .getMemPool(chainIndex)
         .getAll(chainIndex)
         .map(Tx.fromTemplate(_, networkType))
     )
@@ -152,7 +152,7 @@ class ServerUtils(networkType: NetworkType) {
   }
 
   def isInMemPool(blockFlow: BlockFlow, txId: Hash, chainIndex: ChainIndex): Boolean = {
-    blockFlow.getPool(chainIndex).contains(chainIndex, txId)
+    blockFlow.getMemPool(chainIndex).contains(chainIndex, txId)
   }
 
   def getBlock(blockFlow: BlockFlow, query: GetBlock)(implicit cfg: GroupConfig): Try[BlockEntry] =
