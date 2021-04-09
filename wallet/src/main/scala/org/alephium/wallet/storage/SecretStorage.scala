@@ -32,12 +32,13 @@ import org.alephium.crypto.AES
 import org.alephium.crypto.wallet.BIP32
 import org.alephium.crypto.wallet.BIP32.ExtendedPrivateKey
 import org.alephium.serde.{deserialize, serialize, Serde}
-import org.alephium.util.AVector
+import org.alephium.util.{AVector, discard}
 import org.alephium.wallet.Constants
 
 trait SecretStorage {
   def lock(): Unit
   def unlock(password: String): Either[SecretStorage.Error, Unit]
+  def delete(password: String): Either[SecretStorage.Error, Unit]
   def isLocked(): Boolean
   def isMiner(): Either[SecretStorage.Error, Boolean]
   def getCurrentPrivateKey(): Either[SecretStorage.Error, ExtendedPrivateKey]
@@ -162,6 +163,14 @@ object SecretStorage {
         state <- stateFromFile(file, password, path)
       } yield {
         maybeState = Some(state)
+      }
+    }
+
+    override def delete(password: String): Either[Error, Unit] = {
+      for {
+        _ <- stateFromFile(file, password, path)
+      } yield {
+        discard(file.delete())
       }
     }
 
