@@ -456,6 +456,7 @@ object Ast {
 
     final case class EventCode(value: Int) extends AnyVal {
       def eventIndex: Int = value % eventTypes
+      def eventType: Int  = value / eventTypes
     }
 
     def eventType(eventDef: EventDef): Int = {
