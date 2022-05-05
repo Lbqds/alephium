@@ -497,8 +497,13 @@ object WorldState {
       fields.headOption.flatMap {
         case Val.I256(i) =>
           i.toInt.map { value =>
-            val eventCode = EventDef.EventCode(value)
-            (eventCode.eventIndex.toByte, eventCode.eventType)
+            if (value < 0) {
+              // system event
+              (value.toByte, EventDef.scriptEventType)
+            } else {
+              val eventCode = EventDef.EventCode(value)
+              (eventCode.eventIndex.toByte, eventCode.eventType)
+            }
           }
         case _ => None
       }
