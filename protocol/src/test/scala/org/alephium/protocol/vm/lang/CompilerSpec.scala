@@ -16,6 +16,7 @@
 
 package org.alephium.protocol.vm.lang
 
+import akka.util.ByteString
 import org.scalatest.Assertion
 
 import org.alephium.protocol.{Hash, Signature, SignatureSchema}
@@ -164,17 +165,17 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     ) = {
       val contract =
         s"""
-         |TxContract Foo($xMut x: U256) {
-         |  pub fn add($a: $aType, $b: $bType) -> ($rType) {
-         |    x = a + b
-         |    return (a - b)
-         |  }
-         |
-         |  fn $fname() -> () {
-         |    return
-         |  }
-         |}
-         |""".stripMargin
+           |TxContract Foo($xMut x: U256) {
+           |  pub fn add($a: $aType, $b: $bType) -> ($rType) {
+           |    x = a + b
+           |    return (a - b)
+           |  }
+           |
+           |  fn $fname() -> () {
+           |    return
+           |  }
+           |}
+           |""".stripMargin
       Compiler.compileContract(contract).isRight is validity
     }
 
@@ -1052,6 +1053,202 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     test(3, AVector.empty, AVector(Val.True))
     test(4, AVector.empty, AVector(Val.True))
     test(5, AVector.empty, AVector(Val.True))
+  }
+
+  it should "compile struct failed" in {
+    {
+      info("field does not exist in struct")
+      val code =
+        s"""
+           |struct Foo { x: U256 }
+           |
+           |TxContract C() {
+           |  fn func(x: struct Foo) -> U256 {
+           |    return x.y
+           |  }
+           |}
+           |""".stripMargin
+
+      Compiler.compileContract(code).leftValue.message is
+        "Field y does not exist in struct Foo"
+    }
+
+    {
+      info("struct does not exist")
+      val code =
+        s"""
+           |TxContract C(foo: struct Foo) {
+           |  fn func() -> () {
+           |  }
+           |}
+           |""".stripMargin
+
+      Compiler.compileContract(code).leftValue.message is
+        "Struct Foo does not exist"
+    }
+
+    {
+      info("duplicated struct definitions")
+      val code =
+        s"""
+           |struct Foo { x: U256 }
+           |struct Foo { y: ByteVec }
+           |
+           |TxContract C() {
+           |  fn func() -> () {}
+           |}
+           |""".stripMargin
+
+      Compiler.compileContract(code).leftValue.message is
+        "These structs are defined multiple times: Foo"
+    }
+
+    {
+      info("create struct with invalid fields order")
+      val code =
+        s"""
+           |struct Foo {
+           |  x: U256
+           |  y: U256
+           |}
+           |
+           |TxContract C() {
+           |  fn func() -> () {
+           |    let foo = Foo {
+           |      y: 1
+           |      x: 1
+           |    }
+           |  }
+           |}
+           |""".stripMargin
+
+      Compiler.compileContract(code).leftValue.message is
+        "Invalid struct field types, expect List(x:U256, y:U256)"
+    }
+
+    {
+      info("create struct with invalid fields")
+      val code =
+        s"""
+           |struct Foo { x: U256 }
+           |
+           |TxContract C() {
+           |  fn func() -> () {
+           |    let foo = Foo {
+           |      x: 1
+           |      y: 2
+           |    }
+           |  }
+           |}
+           |""".stripMargin
+
+      Compiler.compileContract(code).leftValue.message is
+        "Invalid struct field types, expect List(x:U256)"
+    }
+  }
+
+  it should "test struct" in new TestContractMethodFixture {
+    val code: String =
+      s"""
+         |struct Balance {
+         |  accountId: U256
+         |  amount: U256
+         |}
+         |
+         |struct User {
+         |  name: ByteVec
+         |  accounts: [struct Balance; 2]
+         |}
+         |
+         |TxContract Foo(mut rootUser: struct User) {
+         |  fn createUser(amount1: U256, amount2: U256) -> struct User {
+         |    return User {
+         |      name: #00
+         |      accounts: [
+         |        Balance {
+         |          accountId: 0
+         |          amount: amount1
+         |        },
+         |        Balance {
+         |          accountId: 1
+         |          amount: amount2
+         |        }
+         |      ]
+         |    }
+         |  }
+         |
+         |  pub fn test1() -> () {
+         |    let user = createUser(1000, 2000)
+         |    assert!(user.name == #00)
+         |    assert!(user.accounts[0].accountId == 0)
+         |    assert!(user.accounts[0].amount == 1000)
+         |    assert!(user.accounts[1].accountId == 1)
+         |    assert!(user.accounts[1].amount == 2000)
+         |  }
+         |
+         |  pub fn test2() -> () {
+         |    let user = createUser(1000, 2000)
+         |    let mut accounts = user.accounts
+         |    accounts[0].amount = accounts[0].amount * 2
+         |    accounts[1].amount = accounts[1].amount * 2
+         |    assert!(user.accounts[0].amount == 1000)
+         |    assert!(user.accounts[1].amount == 2000)
+         |    assert!(accounts[0].amount == 2000)
+         |    assert!(accounts[1].amount == 4000)
+         |  }
+         |
+         |  pub fn test3() -> () {
+         |    let mut user = createUser(0, 0)
+         |    user.accounts[0].amount = 2000
+         |    user.accounts[1].amount = 3000
+         |    assert!(user.accounts[0].amount == 2000)
+         |    assert!(user.accounts[1].amount == 3000)
+         |
+         |    let newAccounts = [
+         |      Balance {
+         |        accountId: 2
+         |        amount: 10
+         |      },
+         |      Balance {
+         |        accountId: 3
+         |        amount: 20
+         |      }
+         |    ]
+         |    user.accounts = newAccounts
+         |    loop(0, 2, 1, assert!(user.accounts[?].amount == newAccounts[?].amount))
+         |    loop(0, 2, 1, assert!(user.accounts[?].accountId == newAccounts[?].accountId))
+         |  }
+         |
+         |  pub fn totalBalance(user: struct User) -> U256 {
+         |    return user.accounts[0].amount + user.accounts[1].amount
+         |  }
+         |
+         |  pub fn test5() -> () {
+         |    let balance = totalBalance(createUser(1000, 1000))
+         |    assert!(balance == 2000)
+         |  }
+         |
+         |  pub fn test6() -> () {
+         |    assert!(rootUser.name == #00)
+         |    assert!(rootUser.accounts[0].amount == 100)
+         |    assert!(rootUser.accounts[0].accountId == 10)
+         |    assert!(rootUser.accounts[1].amount == 200)
+         |    assert!(rootUser.accounts[1].accountId == 11)
+         |    loop(0, 2, 1, rootUser.accounts[?].amount = 1000)
+         |    loop(0, 2, 1, rootUser.accounts[?].accountId = ?)
+         |    loop(0, 2, 1, assert!(rootUser.accounts[?].amount == 1000))
+         |    loop(0, 2, 1, assert!(rootUser.accounts[?].accountId == ?))
+         |  }
+         |}
+         |""".stripMargin
+
+    override val fields =
+      AVector(Val.ByteVec(ByteString(0)), Val.U256(10), Val.U256(100), Val.U256(11), Val.U256(200))
+    test(1, AVector.empty, AVector.empty)
+    test(2, AVector.empty, AVector.empty)
+    test(3, AVector.empty, AVector.empty)
+    test(5, AVector.empty, AVector.empty)
+    test(6, AVector.empty, AVector.empty)
   }
 
   it should "compile failed if loop range too large" in {

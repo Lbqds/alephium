@@ -29,6 +29,11 @@ sealed trait Type {
     case _: Type.FixedSizeArray => true
     case _                      => false
   }
+
+  def isStructType: Boolean = this match {
+    case _: Type.Struct => true
+    case _              => false
+  }
 }
 
 object Type {
@@ -43,6 +48,7 @@ object Type {
       case Val.ByteVec                        => ByteVec
       case Val.Address                        => Address
       case Val.FixedSizeArray(baseType, size) => FixedSizeArray(fromVal(baseType), size)
+      case Val.Struct(name)                   => Struct(name)
     }
   }
 
@@ -53,14 +59,8 @@ object Type {
   case object Address extends Type { def toVal: Val.Type = Val.Address }
   final case class FixedSizeArray(baseType: Type, size: Int) extends Type {
     override def toVal: Val.Type = Val.FixedSizeArray(baseType.toVal, size)
-
-    @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
-    def flattenSize(): Int = baseType match {
-      case baseType: FixedSizeArray =>
-        baseType.flattenSize() * size
-      case _ => size
-    }
   }
+  final case class Struct(name: String) extends Type { def toVal: Val.Type = Val.Struct(name) }
 
   sealed trait Contract extends Type {
     def id: Ast.TypeId

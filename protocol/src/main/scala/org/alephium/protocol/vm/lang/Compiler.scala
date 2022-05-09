@@ -220,11 +220,13 @@ object Compiler {
         0,
         contract.funcTable,
         contract.eventsInfo(),
+        multiContract.structs,
         contractsTable
       )
     }
   }
 
+  // scalastyle:off number.of.methods
   trait State[Ctx <: StatelessContext] {
     def config: CompilerConfig
     def varTable: mutable.HashMap[String, VarInfo]
@@ -232,9 +234,10 @@ object Compiler {
     var varIndex: Int
     def funcIdents: immutable.Map[Ast.FuncId, ContractFunc[Ctx]]
     def contractTable: immutable.Map[Ast.TypeId, immutable.Map[Ast.FuncId, ContractFunc[Ctx]]]
-    private var freshNameIndex: Int              = 0
-    val arrayRefs: mutable.Map[String, ArrayRef] = mutable.Map.empty
+    private var freshNameIndex: Int                               = 0
+    val variablesRefs: mutable.HashMap[String, MultipleVariables] = mutable.HashMap.empty
     def eventsInfo: Seq[EventInfo]
+    def structsInfo: Seq[Ast.Struct]
 
     @inline final def freshName(): String = {
       val name = s"_generated#$freshNameIndex"
@@ -245,40 +248,85 @@ object Compiler {
     @SuppressWarnings(
       Array("org.wartremover.warts.AsInstanceOf", "org.wartremover.warts.Recursion")
     )
-    def getOrCreateArrayRef(
-        expr: Ast.Expr[Ctx],
-        isMutable: Boolean
-    ): (ArrayRef, Seq[Instr[Ctx]]) = {
+    def getOrCreateArrayRef(expr: Ast.Expr[Ctx]): (ArrayRef, Seq[Instr[Ctx]]) = {
       expr match {
         case Ast.ArrayElement(array, index) =>
-          val idx               = Ast.getConstantArrayIndex(index)
-          val (arrayRef, codes) = getOrCreateArrayRef(array, isMutable)
-          val subArrayRef = arrayRef
+          val idx          = Ast.getConstantArrayIndex(index)
+          val (ref, codes) = getOrCreateArrayRef(array)
+          val subRef = ref
             .getSubArray(idx)
             .getOrElse(throw Compiler.Error(s"Failed to get sub array, index: $idx"))
-          (subArrayRef, codes)
+          (subRef, codes)
+        case Ast.StructFieldSelector(struct, selector) =>
+          val (ref, codes) = getOrCreateStructRef(struct)
+          val subRef = ref
+            .getArrayBySelector(selector)
+            .getOrElse(throw Compiler.Error(s"Failed to get sub struct, selectors: $selector"))
+          (subRef, codes)
         case Ast.Variable(ident)  => (getArrayRef(ident), Seq.empty)
-        case Ast.ParenExpr(inner) => getOrCreateArrayRef(inner, isMutable)
+        case Ast.ParenExpr(inner) => getOrCreateArrayRef(inner)
         case _ =>
           val arrayType = expr.getType(this)(0).asInstanceOf[Type.FixedSizeArray]
-          val arrayRef  = VariablesRef.fromArray(this, arrayType, freshName(), isMutable)
-          val codes     = expr.genCode(this) ++ arrayRef.allVariables(this).map(genStoreCode).reverse
-          (arrayRef, codes)
+          val ref       = VariablesRef.fromArray(this, arrayType, freshName(), isMutable = false)
+          val codes     = expr.genCode(this) ++ ref.allVariables(this).map(genStoreCode).reverse
+          (ref, codes)
       }
     }
 
-    def addArrayRef(ident: Ast.Ident, arrayRef: ArrayRef): Unit = {
+    @SuppressWarnings(
+      Array("org.wartremover.warts.AsInstanceOf", "org.wartremover.warts.Recursion")
+    )
+    def getOrCreateStructRef(expr: Ast.Expr[Ctx]): (StructRef, Seq[Instr[Ctx]]) = {
+      expr match {
+        case Ast.StructFieldSelector(struct, selector) =>
+          val (ref, codes) = getOrCreateStructRef(struct)
+          val subRef = ref
+            .getStructBySelector(selector)
+            .getOrElse(throw Compiler.Error(s"Failed to get sub struct, selectors: $selector"))
+          (subRef, codes)
+        case Ast.ArrayElement(array, index) =>
+          val (ref, codes) = getOrCreateArrayRef(array)
+          val idx          = Ast.getConstantArrayIndex(index)
+          val subRef = ref
+            .getStructRef(idx)
+            .getOrElse(throw Compiler.Error(s"Failed to get array element, index: $idx"))
+          (subRef, codes)
+        case Ast.Variable(ident)  => (getStructRef(ident), Seq.empty)
+        case Ast.ParenExpr(inner) => getOrCreateStructRef(inner)
+        case _ =>
+          val structType = expr.getType(this)(0).asInstanceOf[Type.Struct]
+          val ref        = VariablesRef.fromStruct(this, structType, freshName(), isMutable = false)
+          val codes      = expr.genCode(this) ++ ref.allVariables(this).map(genStoreCode).reverse
+          (ref, codes)
+      }
+    }
+
+    def addVariablesRef(ident: Ast.Ident, ref: MultipleVariables): Unit = {
       val sname = scopedName(ident.name)
-      assume(!arrayRefs.contains(sname))
-      arrayRefs(sname) = arrayRef
+      assume(!variablesRefs.contains(sname))
+      variablesRefs(sname) = ref
+    }
+
+    def getVariablesRef(ident: Ast.Ident): MultipleVariables = {
+      val sname = scopedName(ident.name)
+      variablesRefs.getOrElse(
+        ident.name,
+        variablesRefs.getOrElse(sname, throw Error(s"Array $ident does not exist"))
+      )
     }
 
     def getArrayRef(ident: Ast.Ident): ArrayRef = {
-      val sname = scopedName(ident.name)
-      arrayRefs.getOrElse(
-        ident.name,
-        arrayRefs.getOrElse(sname, throw Error(s"Array $ident does not exist"))
-      )
+      getVariablesRef(ident) match {
+        case ref: ArrayRef => ref
+        case _             => throw Error(s"Expect array type for $ident")
+      }
+    }
+
+    def getStructRef(ident: Ast.Ident): StructRef = {
+      getVariablesRef(ident) match {
+        case ref: StructRef => ref
+        case _              => throw Error(s"Expect struct type for $ident")
+      }
     }
 
     def setFuncScope(funcId: Ast.FuncId): Unit = {
@@ -301,7 +349,7 @@ object Compiler {
         throw Error(s"Number of variables more than ${State.maxVarIndex}")
       } else {
         tpe match {
-          case _: Type.FixedSizeArray =>
+          case _: Type.FixedSizeArray | _: Type.Struct =>
             varTable(sname) = VarInfo(tpe, isMutable, State.maxVarIndex.toByte)
           case c: Type.Contract =>
             val varType = Type.Contract.local(c.id, ident)
@@ -369,6 +417,14 @@ object Compiler {
         )
     }
 
+    def getStruct(tpe: Type.Struct): Ast.Struct = {
+      structsInfo
+        .find(_.id.name == tpe.name)
+        .getOrElse(
+          throw Error(s"Struct ${tpe.name} does not exist")
+        )
+    }
+
     protected def getBuiltInFunc(call: Ast.FuncId): FuncInfo[Ctx]
 
     private def getNewFunc(call: Ast.FuncId): FuncInfo[Ctx] = {
@@ -416,6 +472,7 @@ object Compiler {
       contractTable: immutable.Map[Ast.TypeId, Contract[StatelessContext]]
   ) extends State[StatelessContext] {
     override def eventsInfo: Seq[EventInfo] = Seq.empty
+    def structsInfo: Seq[Ast.Struct]        = Seq.empty
 
     protected def getBuiltInFunc(call: Ast.FuncId): FuncInfo[StatelessContext] = {
       BuiltIn.statelessFuncs
@@ -426,7 +483,7 @@ object Compiler {
     def genLoadCode(ident: Ast.Ident): Seq[Instr[StatelessContext]] = {
       val varInfo = getVariable(ident)
       if (varInfo.index == -1) { // variable for array
-        getArrayRef(ident).allVariables(this).flatMap(genLoadCode)
+        getVariablesRef(ident).allVariables(this).flatMap(genLoadCode)
       } else {
         if (isField(ident)) {
           throw Error(s"Loading state by ${ident.name} in a stateless context")
@@ -453,6 +510,7 @@ object Compiler {
       var varIndex: Int,
       funcIdents: immutable.Map[Ast.FuncId, ContractFunc[StatefulContext]],
       eventsInfo: Seq[EventInfo],
+      structsInfo: Seq[Ast.Struct],
       contractTable: immutable.Map[Ast.TypeId, Contract[StatefulContext]]
   ) extends State[StatefulContext] {
     protected def getBuiltInFunc(call: Ast.FuncId): FuncInfo[StatefulContext] = {
@@ -464,7 +522,7 @@ object Compiler {
     def genLoadCode(ident: Ast.Ident): Seq[Instr[StatefulContext]] = {
       val varInfo = getVariable(ident)
       if (varInfo.index == -1) { // variable for array
-        getArrayRef(ident).allVariables(this).flatMap(genLoadCode)
+        getVariablesRef(ident).allVariables(this).flatMap(genLoadCode)
       } else {
         if (isField(ident)) {
           Seq(LoadField(varInfo.index))

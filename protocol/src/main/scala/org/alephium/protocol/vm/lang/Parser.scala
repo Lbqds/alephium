@@ -99,16 +99,27 @@ abstract class Parser[Ctx <: StatelessContext] {
   def arithExpr0[_: P]: P[Ast.Expr[Ctx]] =
     P(chain(unaryExpr, Lexer.opMul | Lexer.opDiv | Lexer.opMod | Lexer.opModMul))
   def unaryExpr[_: P]: P[Ast.Expr[Ctx]] =
-    P(arrayElement | (Lexer.opNot ~ arrayElement).map { case (op, expr) =>
-      Ast.UnaryOp.apply[Ctx](op, expr)
+    P(arrayElementOrStructFieldSelector | (Lexer.opNot ~ arrayElementOrStructFieldSelector).map {
+      case (op, expr) =>
+        Ast.UnaryOp.apply[Ctx](op, expr)
     })
-  def arrayElement[_: P]: P[Ast.Expr[Ctx]] = P(atom ~ arrayIndex.rep(0)).map {
-    case (expr, indexes) =>
-      indexes.foldLeft(expr) { case (acc, index) =>
-        Ast.ArrayElement(acc, index)
+
+  private def arrayElementOrStructFieldSelector[_: P] =
+    P(atom ~ P(P("." ~ Lexer.ident) | arrayIndex).rep(0)).map { case (expr, list) =>
+      list.foldLeft(expr) { case (acc, e) =>
+        e match {
+          case arrayIndex: Ast.Expr[Ctx] => Ast.ArrayElement(acc, arrayIndex)
+          case ident: Ast.Ident          => Ast.StructFieldSelector(acc, ident)
+        }
       }
-  }
+    }
+
   def atom[_: P]: P[Ast.Expr[Ctx]]
+
+  def structFieldsInit[_: P]: P[Seq[(Ast.Ident, Ast.Expr[Ctx])]] =
+    P(Lexer.ident ~ ":" ~ expr).rep(1)
+  def structCtor[_: P]: P[Ast.StructCtor[Ctx]] =
+    P(Lexer.typeId ~ "{" ~ structFieldsInit ~ "}").map(Ast.StructCtor[Ctx].tupled)
 
   def parenExpr[_: P]: P[Ast.ParenExpr[Ctx]] = P("(" ~ expr ~ ")").map(Ast.ParenExpr.apply[Ctx])
 
@@ -123,19 +134,18 @@ abstract class Parser[Ctx <: StatelessContext] {
     P(Lexer.keyword("let") ~/ idents ~ "=" ~ expr).map { case (idents, expr) =>
       Ast.VarDef(idents, expr)
     }
-  def assignmentSimpleTarget[_: P]: P[Ast.AssignmentTarget[Ctx]] = P(
-    Lexer.ident.map(Ast.AssignmentSimpleTarget.apply[Ctx])
-  )
-  def assignmentArrayElementTarget[_: P]: P[Ast.AssignmentArrayElementTarget[Ctx]] = P(
-    Lexer.ident ~ arrayIndex.rep(1)
-  ).map { case (ident, indexes) =>
-    Ast.AssignmentArrayElementTarget[Ctx](ident, indexes)
-  }
-  def assignmentTarget[_: P]: P[Ast.AssignmentTarget[Ctx]] = P(
-    assignmentArrayElementTarget | assignmentSimpleTarget
+  def assignmentTarget[_: P]: P[Ast.Expr[Ctx]] = P(
+    arrayElementOrStructFieldSelector | variable
   )
   def assign[_: P]: P[Ast.Statement[Ctx]] =
-    P(assignmentTarget.rep(1, ",") ~ "=" ~ expr).map { case (targets, expr) =>
+    P(assignmentTarget.rep(1, ",") ~ "=" ~ expr).map { case (ts, expr) =>
+      val targets: Seq[Ast.AssignmentTarget[Ctx]] = ts.map {
+        case Ast.StructFieldSelector(expr, selector) =>
+          Ast.AssignmentStructFieldTarget(expr, selector)
+        case Ast.ArrayElement(expr, index) => Ast.AssignmentArrayElementTarget(expr, index)
+        case Ast.Variable(ident)           => Ast.AssignmentSimpleTarget(ident)
+        case expr                          => throw Compiler.Error(s"Invalid assignment target: $expr")
+      }
       Ast.Assign(targets, expr)
     }
 
@@ -143,7 +153,8 @@ abstract class Parser[Ctx <: StatelessContext] {
   def parseType[_: P](contractTypeCtor: Ast.TypeId => Type): P[Type] = {
     P(
       Lexer.typeId.map(id => Lexer.primTpes.getOrElse(id.name, contractTypeCtor(id))) |
-        arrayType(parseType(contractTypeCtor))
+        arrayType(parseType(contractTypeCtor)) |
+        structType
     )
   }
 
@@ -152,6 +163,10 @@ abstract class Parser[Ctx <: StatelessContext] {
     P("[" ~ baseType ~ ";" ~ nonNegativeNum("array size") ~ "]").map { case (tpe, size) =>
       Type.FixedSizeArray(tpe, size)
     }
+  }
+
+  def structType[_: P]: P[Type] = {
+    P(Lexer.keyword("struct") ~ Lexer.typeId).map(id => Type.Struct(id.name))
   }
 
   def funcArgument[_: P]: P[Ast.Argument] =
@@ -225,12 +240,23 @@ abstract class Parser[Ctx <: StatelessContext] {
       }
     }
 
-  def eventField[_: P]: P[Ast.EventField] =
-    P(Lexer.ident ~ ":").flatMap { case (ident) =>
-      parseType(typeId => Type.Contract.global(typeId, ident)).map { tpe =>
-        Ast.EventField(ident, tpe)
-      }
+  def field[_: P]: P[(Ast.Ident, Type)] = P(Lexer.ident ~ ":").flatMap { ident =>
+    parseType(typeId => Type.Contract.global(typeId, ident)).map { tpe =>
+      (ident, tpe)
     }
+  }
+
+  def eventField[_: P]: P[Ast.EventField]   = P(field).map(Ast.EventField.tupled)
+  def structField[_: P]: P[Ast.StructField] = P(field).map(Ast.StructField.tupled)
+  def structFields[_: P]: P[Seq[Ast.StructField]] = P(structField.rep(1)).map { fields =>
+    if (fields.distinctBy(_.ident).size != fields.size) {
+      throw Compiler.Error(s"Duplicated struct fields: ${Ast.UniqueDef.duplicates(fields)}")
+    }
+    fields
+  }
+  def rawStruct[_: P]: P[Ast.Struct] =
+    P(Lexer.keyword("struct") ~/ Lexer.typeId ~/ "{" ~ structFields ~ "}").map(Ast.Struct.tupled)
+  def struct[_: P]: P[Ast.Struct] = P(Start ~ rawStruct ~ End)
 }
 
 @SuppressWarnings(
@@ -262,7 +288,7 @@ object StatelessParser extends Parser[StatelessContext] {
 object StatefulParser extends Parser[StatefulContext] {
   def atom[_: P]: P[Ast.Expr[StatefulContext]] =
     P(
-      placeholder | const | callExpr | contractCallExpr | contractConv | variable | parenExpr | arrayExpr
+      placeholder | const | callExpr | contractCallExpr | contractConv | variable | parenExpr | arrayExpr | structCtor
     )
 
   def contractCallExpr[_: P]: P[Ast.ContractCallExpr] =
@@ -344,9 +370,27 @@ object StatefulParser extends Parser[StatefulContext] {
     }
   def interface[_: P]: P[Ast.ContractInterface] = P(Start ~ rawInterface ~ End)
 
+  def contractWithState[_: P]: P[Ast.ContractWithState] = P(
+    rawTxScript | rawTxContract | rawInterface
+  )
+
+  def contractWithStateOrStruct[_: P]: P[(Ast.ContractWithState, Seq[Ast.Struct])] = P(
+    rawStruct.rep(0) ~ contractWithState ~ struct.rep(0)
+  ).map { case (s1, c, s2) =>
+    (c, s1 ++ s2)
+  }
+
   def multiContract[_: P]: P[Ast.MultiTxContract] =
-    P(Start ~ (rawTxScript | rawTxContract | rawInterface).rep(1) ~ End)
-      .map(Ast.MultiTxContract.apply)
+    P(Start ~ contractWithStateOrStruct.rep(1) ~ End).map { entities =>
+      val contractWithStates = entities.map(_._1)
+      val structs            = entities.flatMap(_._2)
+      if (structs.distinctBy(_.id).size != structs.size) {
+        throw Compiler.Error(
+          s"These structs are defined multiple times: " + Ast.UniqueDef.duplicates(structs)
+        )
+      }
+      Ast.MultiTxContract(contractWithStates, structs)
+    }
 
   def state[_: P]: P[Seq[Ast.Const[StatefulContext]]] =
     P("[" ~ constOrArray.rep(0, ",") ~ "]").map(_.flatten)

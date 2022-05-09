@@ -118,7 +118,7 @@ object Ast {
 
     override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
       val idx          = getConstantArrayIndex(index)
-      val (ref, codes) = state.getOrCreateArrayRef(array, isMutable = false)
+      val (ref, codes) = state.getOrCreateArrayRef(array)
       val subRef       = ref.getArrayElement(idx)
       codes ++ subRef.allVariables(state).flatMap(state.genLoadCode)
     }
@@ -267,6 +267,70 @@ object Ast {
       throw Compiler.Error("Placeholder only allowed in loop")
   }
 
+  final case class StructField(ident: Ident, tpe: Type) extends UniqueDef {
+    def name: String      = ident.name
+    def signature: String = s"${ident.name}:${tpe.signature}"
+  }
+  final case class Struct(id: TypeId, fields: Seq[StructField]) extends UniqueDef {
+    def name: String = id.name
+
+    def getField(selector: Ident): StructField = {
+      fields
+        .find(_.ident == selector)
+        .getOrElse(
+          throw Compiler.Error(s"Field ${selector.name} does not exist in struct ${id.name}")
+        )
+    }
+  }
+
+  final case class StructCtor[Ctx <: StatelessContext](id: TypeId, fields: Seq[(Ident, Expr[Ctx])])
+      extends Expr[Ctx] {
+    def _getType(state: Compiler.State[Ctx]): Seq[Type] = {
+      val structInfo = state.getStruct(Type.Struct(id.name))
+      val expected   = structInfo.fields.map(field => (field.ident, Seq(field.tpe)))
+      val have = fields.map { case (ident, expr) =>
+        (ident, expr.getType(state))
+      }
+      if (have != expected) {
+        throw Compiler.Error(
+          s"Invalid struct field types, expect ${structInfo.fields.map(_.signature)}"
+        )
+      }
+      Seq(Type.Struct(structInfo.id.name))
+    }
+    def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = fields.flatMap(_._2.genCode(state))
+    def fillPlaceholder(expr: Const[Ctx]): Expr[Ctx] = {
+      val newFields = fields.map { case (ident, e) =>
+        (ident, e.fillPlaceholder(expr))
+      }
+      if (newFields == fields) this else StructCtor(id, newFields)
+    }
+  }
+
+  final case class StructFieldSelector[Ctx <: StatelessContext](expr: Expr[Ctx], selector: Ident)
+      extends Expr[Ctx] {
+    def _getType(state: Compiler.State[Ctx]): Seq[Type] = {
+      expr.getType(state) match {
+        case Seq(tpe: Type.Struct) =>
+          val structInfo = state.getStruct(tpe)
+          Seq(structInfo.getField(selector).tpe)
+        case tpe => throw Compiler.Error(s"Expect struct type, have $tpe")
+      }
+    }
+    def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
+      val (ref, codes) = state.getOrCreateStructRef(expr)
+      val subRef = ref.fields.getOrElse(
+        selector,
+        throw Compiler.Error(s"Failed to get element by selector: $selector")
+      )
+      codes ++ subRef.allVariables(state).flatMap(state.genLoadCode)
+    }
+    def fillPlaceholder(expr: Const[Ctx]): Expr[Ctx] = {
+      val newExpr = this.expr.fillPlaceholder(expr)
+      if (newExpr == this.expr) this else StructFieldSelector(newExpr, selector)
+    }
+  }
+
   sealed trait Statement[Ctx <: StatelessContext] {
     def fillPlaceholder(expr: Ast.Const[Ctx]): Statement[Ctx]
     def check(state: Compiler.State[Ctx]): Unit
@@ -301,6 +365,9 @@ object Ast {
         case ((isMutable, ident), tpe: Type.FixedSizeArray) =>
           state.addVariable(ident, tpe, isMutable)
           discard(VariablesRef.fromArray(state, tpe, ident.name, isMutable))
+        case ((isMutable, ident), tpe: Type.Struct) =>
+          state.addVariable(ident, tpe, isMutable)
+          discard(VariablesRef.fromStruct(state, tpe, ident.name, isMutable))
         case ((isMutable, ident), tpe) =>
           state.addVariable(ident, tpe, isMutable)
       }
@@ -310,10 +377,12 @@ object Ast {
       throw Compiler.Error("Cannot define new variable in loop")
 
     override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
-      val variables = idents.zip(value.getType(state)).flatMap {
-        case ((_, ident), _: Type.FixedSizeArray) =>
-          state.getArrayRef(ident).allVariables(state)
-        case ((_, ident), _) => Seq(ident)
+      val variables = idents.zip(value.getType(state)).flatMap { case ((_, ident), tpe) =>
+        tpe match {
+          case _: Type.FixedSizeArray | _: Type.Struct =>
+            state.getVariablesRef(ident).allVariables(state)
+          case _ => Seq(ident)
+        }
       }
       value.genCode(state) ++ variables.map(state.genStoreCode).reverse
     }
@@ -394,43 +463,69 @@ object Ast {
       extends AssignmentTarget[Ctx] {
     def _getType(state: Compiler.State[Ctx]): Type = state.getVariable(ident).tpe
     def getVariables(state: Compiler.State[Ctx]): Seq[Ident] =
-      if (getType(state).isArrayType) state.getArrayRef(ident).allVariables(state) else Seq(ident)
+      getType(state) match {
+        case _: Type.FixedSizeArray | _: Type.Struct =>
+          state.getVariablesRef(ident).allVariables(state)
+        case _ => Seq(ident)
+      }
     def fillPlaceholder(expr: Const[Ctx]): AssignmentTarget[Ctx] = this
   }
-  final case class AssignmentArrayElementTarget[Ctx <: StatelessContext](
-      ident: Ident,
-      indexes: Seq[Ast.Expr[Ctx]]
+  final case class AssignmentStructFieldTarget[Ctx <: StatelessContext](
+      expr: Expr[Ctx],
+      selector: Ident
   ) extends AssignmentTarget[Ctx] {
-    @scala.annotation.tailrec
-    private def elementType(indexes: Seq[Ast.Expr[Ctx]], tpe: Type): Type = {
-      if (indexes.isEmpty) {
-        tpe
-      } else {
-        tpe match {
-          case arrayType: Type.FixedSizeArray =>
-            elementType(indexes.drop(1), arrayType.baseType)
-          case _ =>
-            throw Compiler.Error("Invalid array element assignment target")
-        }
+    def _getType(state: Compiler.State[Ctx]): Type = {
+      expr.getType(state) match {
+        case Seq(tpe: Type.Struct) =>
+          val structInfo = state.getStruct(tpe)
+          structInfo.getField(selector).tpe
+        case tpe => throw Compiler.Error(s"Expect struct type, have $tpe")
+      }
+    }
+    def getVariables(state: Compiler.State[Ctx]): Seq[Ident] = {
+      val (ref, codes) = state.getOrCreateStructRef(expr)
+      if (codes.nonEmpty) {
+        throw Compiler.Error("Invalid struct field assignment statement")
+      }
+      val subRef = ref.fields.getOrElse(
+        selector,
+        throw Compiler.Error(s"Failed to get element by selector: $selector")
+      )
+      subRef.allVariables(state)
+    }
+    def fillPlaceholder(expr: Const[Ctx]): AssignmentTarget[Ctx] = {
+      val newExpr = this.expr.fillPlaceholder(expr)
+      if (newExpr == this.expr) this else AssignmentStructFieldTarget(newExpr, selector)
+    }
+  }
+  final case class AssignmentArrayElementTarget[Ctx <: StatelessContext](
+      expr: Ast.Expr[Ctx],
+      index: Ast.Expr[Ctx]
+  ) extends AssignmentTarget[Ctx] {
+    def _getType(state: Compiler.State[Ctx]): Type = {
+      expr.getType(state) match {
+        case Seq(tpe: Type.FixedSizeArray) => tpe.baseType
+        case tpe                           => throw Compiler.Error(s"Expect array type, have $tpe")
       }
     }
 
-    def _getType(state: Compiler.State[Ctx]): Type = {
-      elementType(indexes, state.getVariable(ident).tpe)
-    }
-
     def getVariables(state: Compiler.State[Ctx]): Seq[Ident] = {
-      val arrayRef = state.getArrayRef(ident)
-      val idxes    = indexes.map(getConstantArrayIndex)
-      arrayRef
-        .getArrayElement(idxes)
-        .getOrElse(throw Compiler.Error(s"Invalid indexes for array: $idxes"))
-        .allVariables(state)
+      val (ref, codes) = state.getOrCreateArrayRef(expr)
+      if (codes.nonEmpty) {
+        throw Compiler.Error("Invalid array element assignment statement")
+      }
+      val idx = getConstantArrayIndex(index)
+      ref.getArrayElement(idx).allVariables(state)
     }
 
     def fillPlaceholder(expr: Const[Ctx]): AssignmentTarget[Ctx] = {
-      val newIndexes = indexes.map(_.fillPlaceholder(expr))
-      if (newIndexes == indexes) this else AssignmentArrayElementTarget(ident, newIndexes)
+      val newExpr  = this.expr.fillPlaceholder(expr)
+      val newIndex = index.fillPlaceholder(expr)
+      if (newIndex == index && newExpr == this.expr) {
+        this
+      } else {
+        AssignmentArrayElementTarget(newExpr, newIndex)
+      }
     }
   }
 
@@ -843,7 +938,7 @@ object Ast {
     }
   }
 
-  final case class MultiTxContract(contracts: Seq[ContractWithState]) {
+  final case class MultiTxContract(contracts: Seq[ContractWithState], structs: Seq[Struct]) {
     def get(contractIndex: Int): ContractWithState = {
       if (contractIndex >= 0 && contractIndex < contracts.size) {
         contracts(contractIndex)
@@ -912,7 +1007,7 @@ object Ast {
           val (funcs, events) = MultiTxContract.extractFuncsAndEvents(parentsCache, i)
           ContractInterface(i.ident, funcs, events, i.inheritances)
       }
-      MultiTxContract(newContracts)
+      MultiTxContract(newContracts, structs)
     }
 
     def genStatefulScript(

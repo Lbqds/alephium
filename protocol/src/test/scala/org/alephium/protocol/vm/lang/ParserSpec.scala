@@ -91,8 +91,48 @@ class ParserSpec extends AlephiumSpec {
         Const(Val.ByteVec(ByteString.empty)),
         Const(Val.ByteVec(Hex.unsafe("00")))
       )
-    fastparse.parse("let bytes = #", StatefulParser.statement(_)).get.value is
-      VarDef[StatefulContext](Seq((false, Ident("bytes"))), Const(Val.ByteVec(ByteString.empty)))
+    fastparse.parse("Foo { x: 1 y: func() }", StatefulParser.expr(_)).get.value is
+      StructCtor[StatefulContext](
+        TypeId("Foo"),
+        Seq(
+          (Ident("x"), Const(Val.U256(U256.unsafe(1)))),
+          (Ident("y"), CallExpr(FuncId("func", false), Seq.empty))
+        )
+      )
+    fastparse.parse("a.b.c", StatefulParser.expr(_)).get.value is
+      StructFieldSelector[StatefulContext](
+        StructFieldSelector(Variable(Ident("a")), Ident("b")),
+        Ident("c")
+      )
+    fastparse.parse("a[0].b.c", StatefulParser.expr(_)).get.value is
+      StructFieldSelector[StatefulContext](
+        StructFieldSelector(
+          ArrayElement(Variable(Ident("a")), Const(Val.U256(U256.unsafe(0)))),
+          Ident("b")
+        ),
+        Ident("c")
+      )
+    fastparse.parse("a.b[0].c", StatefulParser.expr(_)).get.value is
+      StructFieldSelector[StatefulContext](
+        ArrayElement(
+          StructFieldSelector[StatefulContext](Variable(Ident("a")), Ident("b")),
+          Const(Val.U256(U256.unsafe(0)))
+        ),
+        Ident("c")
+      )
+    fastparse.parse("foo().a", StatefulParser.expr(_)).get.value is
+      StructFieldSelector[StatefulContext](
+        CallExpr(FuncId("foo", false), Seq.empty),
+        Ident("a")
+      )
+    fastparse.parse("!a.b", StatefulParser.expr(_)).get.value is
+      UnaryOp[StatefulContext](
+        LogicalOperator.Not,
+        StructFieldSelector(
+          Variable(Ident("a")),
+          Ident("b")
+        )
+      )
   }
 
   it should "parse return" in {
@@ -111,6 +151,47 @@ class ParserSpec extends AlephiumSpec {
     fastparse
       .parse("if x >= 1 { y = y + x } else { y = 0 }", StatelessParser.statement(_))
       .isSuccess is true
+    fastparse.parse("let bytes = #", StatefulParser.statement(_)).get.value is
+      VarDef[StatefulContext](Seq((false, Ident("bytes"))), Const(Val.ByteVec(ByteString.empty)))
+    fastparse.parse("a.b = x", StatefulParser.statement(_)).get.value is
+      Assign[StatefulContext](
+        Seq(AssignmentStructFieldTarget(Variable(Ident("a")), Ident("b"))),
+        Variable(Ident("x"))
+      )
+    fastparse.parse("a.b[0] = x", StatefulParser.statement(_)).get.value is
+      Assign[StatefulContext](
+        Seq(
+          AssignmentArrayElementTarget(
+            StructFieldSelector(Variable(Ident("a")), Ident("b")),
+            Const(Val.U256(U256.unsafe(0)))
+          )
+        ),
+        Variable(Ident("x"))
+      )
+    fastparse.parse("a[0].b = x", StatefulParser.statement(_)).get.value is
+      Assign[StatefulContext](
+        Seq(
+          AssignmentStructFieldTarget(
+            ArrayElement(Variable(Ident("a")), Const(Val.U256(U256.unsafe(0)))),
+            Ident("b")
+          )
+        ),
+        Variable(Ident("x"))
+      )
+    fastparse.parse("a[0].b, c.d[0] = foo()", StatefulParser.statement(_)).get.value is
+      Assign[StatefulContext](
+        Seq(
+          AssignmentStructFieldTarget(
+            ArrayElement(Variable(Ident("a")), Const(Val.U256(U256.unsafe(0)))),
+            Ident("b")
+          ),
+          AssignmentArrayElementTarget(
+            StructFieldSelector(Variable(Ident("c")), Ident("d")),
+            Const(Val.U256(U256.unsafe(0)))
+          )
+        ),
+        CallExpr(FuncId("foo", false), Seq.empty)
+      )
   }
 
   it should "parse functions" in {
@@ -286,15 +367,25 @@ class ParserSpec extends AlephiumSpec {
   it should "parse assign statement" in {
     val stats: List[(String, Ast.Statement[StatelessContext])] = List(
       "a[0] = b" -> Assign(
-        Seq(AssignmentArrayElementTarget(Ident("a"), Seq(constantIndex(0)))),
+        Seq(AssignmentArrayElementTarget(Variable(Ident("a")), constantIndex(0))),
         Ast.Variable(Ast.Ident("b"))
       ),
       "a[0][1] = b[0]" -> Assign(
-        Seq(AssignmentArrayElementTarget(Ident("a"), Seq(constantIndex(0), constantIndex(1)))),
+        Seq(
+          AssignmentArrayElementTarget(
+            ArrayElement(Variable(Ident("a")), constantIndex(0)),
+            constantIndex(1)
+          )
+        ),
         Ast.ArrayElement(Ast.Variable(Ast.Ident("b")), constantIndex(0))
       ),
       "a[?][0] = ?" -> Assign(
-        Seq(AssignmentArrayElementTarget(Ident("a"), Seq(Ast.Placeholder(), constantIndex(0)))),
+        Seq(
+          AssignmentArrayElementTarget(
+            ArrayElement(Variable(Ident("a")), Ast.Placeholder()),
+            constantIndex(0)
+          )
+        ),
         Ast.Placeholder()
       ),
       "a, b = foo()" -> Assign(
@@ -304,7 +395,7 @@ class ParserSpec extends AlephiumSpec {
       "a, b[?] = foo()" -> Assign(
         Seq(
           AssignmentSimpleTarget(Ident("a")),
-          AssignmentArrayElementTarget(Ident("b"), Seq(Placeholder()))
+          AssignmentArrayElementTarget(Variable(Ident("b")), Placeholder())
         ),
         CallExpr(FuncId("foo", false), Seq.empty)
       )
@@ -325,8 +416,8 @@ class ParserSpec extends AlephiumSpec {
         Ast.Assign(
           Seq(
             Ast.AssignmentArrayElementTarget(
-              Ast.Ident("x"),
-              Seq(Ast.Placeholder[StatelessContext]())
+              Variable(Ast.Ident("x")),
+              Ast.Placeholder[StatelessContext]()
             )
           ),
           Ast.Placeholder[StatelessContext]()
@@ -410,23 +501,23 @@ class ParserSpec extends AlephiumSpec {
       info("Contract event inheritance")
       val foo: String =
         s"""
-             |TxContract Foo() {
-             |  event Foo(x: U256)
-             |  event Foo2(x: U256)
-             |
-             |  pub fn foo() -> () {
-             |    emit Foo(1)
-             |    emit Foo2(2)
-             |  }
-             |}
-             |""".stripMargin
+           |TxContract Foo() {
+           |  event Foo(x: U256)
+           |  event Foo2(x: U256)
+           |
+           |  pub fn foo() -> () {
+           |    emit Foo(1)
+           |    emit Foo2(2)
+           |  }
+           |}
+           |""".stripMargin
       val bar: String =
         s"""
-             |TxContract Bar() extends Foo() {
-             |  pub fn bar() -> () {}
-             |}
-             |$foo
-             |""".stripMargin
+           |TxContract Bar() extends Foo() {
+           |  pub fn bar() -> () {}
+           |}
+           |$foo
+           |""".stripMargin
       val extended =
         fastparse.parse(bar, StatefulParser.multiContract(_)).get.value.extendedContracts()
       val barContract = extended.contracts(0)
@@ -491,6 +582,43 @@ class ParserSpec extends AlephiumSpec {
         Seq.empty,
         Seq(InterfaceInheritance(TypeId("Parent")))
       )
+    }
+  }
+
+  it should "test struct parser" in {
+    {
+      info("parse struct definition")
+      val code =
+        s"""
+           |struct Foo {
+           |  a: U256
+           |  b: [U256; 2]
+           |  c: struct Bar
+           |  d: [struct Bar; 2]
+           |}
+           |""".stripMargin
+      fastparse.parse(code, StatefulParser.struct(_)).get.value is Struct(
+        TypeId("Foo"),
+        Seq(
+          StructField(Ident("a"), Type.U256),
+          StructField(Ident("b"), Type.FixedSizeArray(Type.U256, 2)),
+          StructField(Ident("c"), Type.Struct("Bar")),
+          StructField(Ident("d"), Type.FixedSizeArray(Type.Struct("Bar"), 2))
+        )
+      )
+    }
+
+    {
+      info("parse failed due to duplicated fields")
+      val code =
+        s"""
+           |struct Foo {
+           |  a: U256
+           |  a: ByteVec
+           |}
+           |""".stripMargin
+      val error = intercept[Compiler.Error](fastparse.parse(code, StatefulParser.struct(_)))
+      error.message is "Duplicated struct fields: a"
     }
   }
 }

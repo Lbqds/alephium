@@ -154,6 +154,7 @@ object Lexer {
     "AssetScript",
     "TxScript",
     "Interface",
+    "struct",
     "let",
     "mut",
     "fn",
