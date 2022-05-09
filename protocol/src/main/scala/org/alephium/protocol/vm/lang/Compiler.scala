@@ -232,8 +232,8 @@ object Compiler {
     var varIndex: Int
     def funcIdents: immutable.Map[Ast.FuncId, ContractFunc[Ctx]]
     def contractTable: immutable.Map[Ast.TypeId, immutable.Map[Ast.FuncId, ContractFunc[Ctx]]]
-    private var freshNameIndex: Int                               = 0
-    val arrayRefs: mutable.Map[String, ArrayTransformer.ArrayRef] = mutable.Map.empty
+    private var freshNameIndex: Int              = 0
+    val arrayRefs: mutable.Map[String, ArrayRef] = mutable.Map.empty
     def eventsInfo: Seq[EventInfo]
 
     @inline final def freshName(): String = {
@@ -248,30 +248,32 @@ object Compiler {
     def getOrCreateArrayRef(
         expr: Ast.Expr[Ctx],
         isMutable: Boolean
-    ): (ArrayTransformer.ArrayRef, Seq[Instr[Ctx]]) = {
+    ): (ArrayRef, Seq[Instr[Ctx]]) = {
       expr match {
         case Ast.ArrayElement(array, index) =>
           val idx               = Ast.getConstantArrayIndex(index)
           val (arrayRef, codes) = getOrCreateArrayRef(array, isMutable)
-          val subArrayRef       = arrayRef.subArray(idx)
+          val subArrayRef = arrayRef
+            .getSubArray(idx)
+            .getOrElse(throw Compiler.Error(s"Failed to get sub array, index: $idx"))
           (subArrayRef, codes)
         case Ast.Variable(ident)  => (getArrayRef(ident), Seq.empty)
         case Ast.ParenExpr(inner) => getOrCreateArrayRef(inner, isMutable)
         case _ =>
           val arrayType = expr.getType(this)(0).asInstanceOf[Type.FixedSizeArray]
-          val arrayRef  = ArrayTransformer.ArrayRef.init(this, arrayType, freshName(), isMutable)
-          val codes     = expr.genCode(this) ++ arrayRef.vars.map(genStoreCode).reverse
+          val arrayRef  = VariablesRef.fromArray(this, arrayType, freshName(), isMutable)
+          val codes     = expr.genCode(this) ++ arrayRef.allVariables(this).map(genStoreCode).reverse
           (arrayRef, codes)
       }
     }
 
-    def addArrayRef(ident: Ast.Ident, arrayRef: ArrayTransformer.ArrayRef): Unit = {
+    def addArrayRef(ident: Ast.Ident, arrayRef: ArrayRef): Unit = {
       val sname = scopedName(ident.name)
       assume(!arrayRefs.contains(sname))
       arrayRefs(sname) = arrayRef
     }
 
-    def getArrayRef(ident: Ast.Ident): ArrayTransformer.ArrayRef = {
+    def getArrayRef(ident: Ast.Ident): ArrayRef = {
       val sname = scopedName(ident.name)
       arrayRefs.getOrElse(
         ident.name,
@@ -424,7 +426,7 @@ object Compiler {
     def genLoadCode(ident: Ast.Ident): Seq[Instr[StatelessContext]] = {
       val varInfo = getVariable(ident)
       if (varInfo.index == -1) { // variable for array
-        getArrayRef(ident).vars.flatMap(genLoadCode)
+        getArrayRef(ident).allVariables(this).flatMap(genLoadCode)
       } else {
         if (isField(ident)) {
           throw Error(s"Loading state by ${ident.name} in a stateless context")
@@ -462,7 +464,7 @@ object Compiler {
     def genLoadCode(ident: Ast.Ident): Seq[Instr[StatefulContext]] = {
       val varInfo = getVariable(ident)
       if (varInfo.index == -1) { // variable for array
-        getArrayRef(ident).vars.flatMap(genLoadCode)
+        getArrayRef(ident).allVariables(this).flatMap(genLoadCode)
       } else {
         if (isField(ident)) {
           Seq(LoadField(varInfo.index))

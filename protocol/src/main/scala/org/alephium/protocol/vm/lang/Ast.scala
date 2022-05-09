@@ -117,14 +117,10 @@ object Ast {
     }
 
     override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
-      val idx               = getConstantArrayIndex(index)
-      val (arrayRef, codes) = state.getOrCreateArrayRef(array, isMutable = false)
-      if (arrayRef.isMultiDim()) {
-        codes ++ arrayRef.subArray(idx).vars.flatMap(state.genLoadCode)
-      } else {
-        val ident = arrayRef.getVariable(idx)
-        codes ++ state.genLoadCode(ident)
-      }
+      val idx          = getConstantArrayIndex(index)
+      val (ref, codes) = state.getOrCreateArrayRef(array, isMutable = false)
+      val subRef       = ref.getArrayElement(idx)
+      codes ++ subRef.allVariables(state).flatMap(state.genLoadCode)
     }
   }
   final case class Variable[Ctx <: StatelessContext](id: Ident) extends Expr[Ctx] {
@@ -304,7 +300,7 @@ object Ast {
       idents.zip(types).foreach {
         case ((isMutable, ident), tpe: Type.FixedSizeArray) =>
           state.addVariable(ident, tpe, isMutable)
-          discard(ArrayTransformer.ArrayRef.init(state, tpe, ident.name, isMutable))
+          discard(VariablesRef.fromArray(state, tpe, ident.name, isMutable))
         case ((isMutable, ident), tpe) =>
           state.addVariable(ident, tpe, isMutable)
       }
@@ -316,7 +312,7 @@ object Ast {
     override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
       val variables = idents.zip(value.getType(state)).flatMap {
         case ((_, ident), _: Type.FixedSizeArray) =>
-          state.getArrayRef(ident).vars
+          state.getArrayRef(ident).allVariables(state)
         case ((_, ident), _) => Seq(ident)
       }
       value.genCode(state) ++ variables.map(state.genStoreCode).reverse
@@ -368,7 +364,7 @@ object Ast {
 
     def check(state: Compiler.State[Ctx]): Unit = {
       state.checkArguments(args)
-      ArrayTransformer.initArgVars(state, args)
+      VariablesRef.addArgs(state, args)
       body.foreach(_.check(state))
       if (rtypes.nonEmpty) checkRetTypes(body.lastOption)
     }
@@ -382,9 +378,9 @@ object Ast {
       Method[Ctx](
         isPublic,
         isPayable,
-        argsLength = ArrayTransformer.flattenTypeLength(args.map(_.tpe)),
+        argsLength = VariablesRef.flattenTypeLength(state, args.map(_.tpe)),
         localsLength = localVars.length,
-        returnLength = ArrayTransformer.flattenTypeLength(rtypes),
+        returnLength = VariablesRef.flattenTypeLength(state, rtypes),
         AVector.from(instrs)
       )
     }
@@ -398,7 +394,7 @@ object Ast {
       extends AssignmentTarget[Ctx] {
     def _getType(state: Compiler.State[Ctx]): Type = state.getVariable(ident).tpe
     def getVariables(state: Compiler.State[Ctx]): Seq[Ident] =
-      if (getType(state).isArrayType) state.getArrayRef(ident).vars else Seq(ident)
+      if (getType(state).isArrayType) state.getArrayRef(ident).allVariables(state) else Seq(ident)
     def fillPlaceholder(expr: Const[Ctx]): AssignmentTarget[Ctx] = this
   }
   final case class AssignmentArrayElementTarget[Ctx <: StatelessContext](
@@ -426,10 +422,10 @@ object Ast {
     def getVariables(state: Compiler.State[Ctx]): Seq[Ident] = {
       val arrayRef = state.getArrayRef(ident)
       val idxes    = indexes.map(getConstantArrayIndex)
-      getType(state) match {
-        case _: Type.FixedSizeArray => arrayRef.subArray(idxes).vars
-        case _                      => Seq(arrayRef.getVariable(idxes))
-      }
+      arrayRef
+        .getArrayElement(idxes)
+        .getOrElse(throw Compiler.Error(s"Invalid indexes for array: $idxes"))
+        .allVariables(state)
     }
 
     def fillPlaceholder(expr: Const[Ctx]): AssignmentTarget[Ctx] = {
@@ -549,7 +545,7 @@ object Ast {
       args.flatMap(_.genCode(state)) ++
         (if (func.isVariadic) Seq(U256Const(Val.U256(U256.unsafe(args.length)))) else Seq.empty) ++
         func.genCode(argsType) ++
-        Seq.fill(ArrayTransformer.flattenTypeLength(returnType))(Pop)
+        Seq.fill(VariablesRef.flattenTypeLength(state, returnType))(Pop)
     }
   }
   final case class ContractCall(
@@ -577,7 +573,7 @@ object Ast {
       val returnType = func.getReturnType(argsType)
       args.flatMap(_.genCode(state)) ++ obj.genCode(state) ++
         func.genExternalCallCode(contract.id) ++
-        Seq.fill[Instr[StatefulContext]](ArrayTransformer.flattenTypeLength(returnType))(Pop)
+        Seq.fill[Instr[StatefulContext]](VariablesRef.flattenTypeLength(state, returnType))(Pop)
     }
   }
   final case class IfElse[Ctx <: StatelessContext](
@@ -717,7 +713,7 @@ object Ast {
 
     def check(state: Compiler.State[Ctx]): Unit = {
       state.checkArguments(fields)
-      ArrayTransformer.initArgVars(state, fields)
+      VariablesRef.addArgs(state, fields)
     }
 
     def genCode(state: Compiler.State[Ctx]): VmContract[Ctx]
@@ -823,7 +819,7 @@ object Ast {
     def genCode(state: Compiler.State[StatefulContext]): StatefulContract = {
       check(state)
       StatefulContract(
-        ArrayTransformer.flattenTypeLength(fields.map(_.tpe)),
+        VariablesRef.flattenTypeLength(state, fields.map(_.tpe)),
         AVector.from(funcs.view.map(_.toMethod(state)))
       )
     }
