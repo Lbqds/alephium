@@ -846,7 +846,9 @@ class VMSpec extends AlephiumSpec {
          |    assert!(10 ** 18 == 1 alph, 0)
          |    assert!(-3 ** 2 == 9i, 0)
          |    assert!(-3 ** 3 == -27, 0)
+         |    assert!(8 / 2 ** 2 + 1 == 3, 0)
          |    assert!(2 |**| 256 == 0, 0)
+         |    assert!(8 / 2 |**| 2 - 1 == 1, 0)
          |    let a = 2 ** 255 + 1
          |    assert!(a |**| 3 == a, 0)
          |
