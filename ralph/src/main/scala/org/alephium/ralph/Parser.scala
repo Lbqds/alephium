@@ -111,7 +111,12 @@ abstract class Parser[Ctx <: StatelessContext] {
       )
     )
   def arithExpr0[Unknown: P]: P[Ast.Expr[Ctx]] =
-    P(chain(unaryExpr, Lexer.opMul | Lexer.opDiv | Lexer.opMod | Lexer.opModMul))
+    P(
+      chain(
+        unaryExpr,
+        Lexer.opExp | Lexer.opModExp | Lexer.opMul | Lexer.opDiv | Lexer.opMod | Lexer.opModMul
+      )
+    )
   def unaryExpr[Unknown: P]: P[Ast.Expr[Ctx]] =
     P(arrayElementOrAtom | (Lexer.opNot ~ arrayElementOrAtom).map { case (op, expr) =>
       Ast.UnaryOp.apply[Ctx](op, expr)
