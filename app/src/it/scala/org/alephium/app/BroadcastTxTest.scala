@@ -84,8 +84,8 @@ class BroadcastTxTest extends AlephiumActorSpec {
 
   it should "broadcast sequential txs between inter clique node" in new CliqueFixture {
     // increase these values for stress testing
-    val numCliques = 2
-    val numTxs     = 12
+    val numCliques = 4
+    val numTxs     = 100
 
     val clique1           = bootClique(nbOfNodes = 1)
     val masterPortClique1 = clique1.masterTcpPort
