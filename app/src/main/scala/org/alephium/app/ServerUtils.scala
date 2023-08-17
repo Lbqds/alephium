@@ -778,13 +778,12 @@ class ServerUtils(implicit
           )
       )
       unsignedTx <- wrapError {
-        val inputs     = selectedUtxos.assets.map(_.ref).map(TxInput(_, fromUnlockScript))
-        val inputUTXOs = selectedUtxos.assets.map(_.output)
-        UnsignedTransaction.approve(
+        val inputs = selectedUtxos.assets.map(utxo => (utxo.ref, utxo.output))
+        UnsignedTransaction.buildScriptTx(
           script,
           fromLockupScript,
+          fromUnlockScript,
           inputs,
-          inputUTXOs,
           amount,
           tokens,
           gas.getOrElse(selectedUtxos.gas),
