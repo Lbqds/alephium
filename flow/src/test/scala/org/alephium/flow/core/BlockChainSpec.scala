@@ -676,13 +676,16 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
       val (chain, uncles) = createBlockChainWithUncles(chainLength)
       (1 to chainLength).reverse.foreach(height => {
         val currentBlock = chain.getMainChainBlockByHeight(height).rightValue.get
-        val recentUncles = chain.getRecentUncles(currentBlock.header).rightValue
+        val recentUncles = ArrayBuffer.empty[BlockHeader]
+        chain.getUncles(
+          currentBlock.header,
+          uncleHeaders => { recentUncles ++= uncleHeaders; false }
+        )
         recentUncles.length is Math.min(
           ALPH.MaxUncleSize * ALPH.MaxUncleAge,
           ALPH.MaxUncleSize * height
         )
         recentUncles.foreach(uncle => uncles.contains(uncle) is true)
-        chain.getAvailableUncles(currentBlock.header).rightValue is recentUncles
 
         val (usedUncleHashes, ancestors) =
           chain.getUsedUnclesAndAncestors(currentBlock.header).rightValue
@@ -712,15 +715,17 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
     (1 to ALPH.MaxUncleAge).foreach(index => {
       val uncles = chain.selectUncles(currentBlock.header).rightValue
       val block =
-        blockGen(currentBlock.chainIndex, currentBlock.timestamp, currentBlock.hash).sample.get
-      addBlock(chain, block.copy(uncles = uncles))
+        blockGen(
+          currentBlock.chainIndex,
+          currentBlock.timestamp,
+          currentBlock.hash,
+          uncles
+        ).sample.get
+      addBlock(chain, block)
       chain.getHeight(block.hash).isE(currentHeight + index)
 
       val (usedUncles, _) = chain.getUsedUnclesAndAncestors(block.header).rightValue
       uncles.foreach(uncle => usedUncles.exists(_ == uncle.hash) is true)
-      val availableUncles = chain.getAvailableUncles(block.header).rightValue
-      uncles.foreach(uncle => availableUncles.exists(_.hash == uncle.hash) is false)
-
       currentBlock = block
     })
 
@@ -738,7 +743,6 @@ class BlockChainSpec extends AlephiumSpec with BeforeAndAfter {
     val fromHeight = ALPH.MaxUncleAge + 1
     (fromHeight to ALPH.MaxUncleAge * 2).foreach(height => {
       val header = chain.getMainChainBlockByHeight(height).rightValue.get.header
-      chain.getAvailableUncles(header).rightValue.isEmpty is true
       chain.selectUncles(header).rightValue.isEmpty is true
       val block = blockGen(header.chainIndex, header.timestamp, header.hash).sample.get
       addBlock(chain, block)

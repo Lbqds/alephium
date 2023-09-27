@@ -17,6 +17,7 @@
 package org.alephium.flow.core
 
 import scala.annotation.tailrec
+import scala.collection.mutable.ArrayBuffer
 
 import org.alephium.flow.Utils
 import org.alephium.flow.core.BlockChain.{ChainDiff, TxIndex, TxStatus}
@@ -64,7 +65,12 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
         Right((unclesAcc, ancestorsAcc))
       } else {
         for {
-          uncles <- getBlock(fromHeader.hash).map(_.uncles.map(_.hash))
+          uncles <-
+            if (fromHeader.uncleHash == BlockHeader.EmptyUncleHash) {
+              Right(AVector.empty[BlockHash])
+            } else {
+              getBlock(fromHeader.hash).map(_.uncles.map(_.hash))
+            }
           parent <- getBlockHeader(fromHeader.parentHash)
           result <- iter(parent, num - 1, unclesAcc ++ uncles, ancestorsAcc :+ parent)
         } yield result
@@ -73,60 +79,69 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
     iter(header, ALPH.MaxUncleAge, AVector.empty, AVector.empty)
   }
 
-  def getRecentUncles(header: BlockHeader): IOResult[AVector[BlockHeader]] = {
+  def getUncles(header: BlockHeader, func: AVector[BlockHeader] => Boolean): IOResult[Unit] = {
     @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
-    def iter(
-        fromHeader: BlockHeader,
-        num: Int,
-        acc: AVector[BlockHeader]
-    ): IOResult[AVector[BlockHeader]] = {
+    def iter(fromHeader: BlockHeader, num: Int): IOResult[Unit] = {
       if (fromHeader.isGenesis || num == 0) {
-        Right(acc)
+        Right(())
       } else {
         for {
           height       <- getHeight(fromHeader.hash)
           uncleHashes  <- getHashes(height).map(_.tail)
           uncleHeaders <- uncleHashes.mapE(uncleHash => getBlockHeader(uncleHash))
-          parent       <- getBlockHeader(fromHeader.parentHash)
-          result       <- iter(parent, num - 1, acc ++ uncleHeaders)
-        } yield result
+          _ <-
+            if (func(uncleHeaders)) {
+              Right(())
+            } else {
+              getBlockHeader(fromHeader.parentHash).flatMap(iter(_, num - 1))
+            }
+        } yield ()
       }
     }
-    iter(header, ALPH.MaxUncleAge, AVector.empty)
-  }
-
-  def getAvailableUncles(header: BlockHeader): IOResult[AVector[BlockHeader]] = {
-    for {
-      usedUnclesAndAncestors <- getUsedUnclesAndAncestors(header)
-      (usedUncles, ancestors) = usedUnclesAndAncestors
-      availableUncles <- getRecentUncles(header)
-    } yield {
-      availableUncles.filter { uncle =>
-        !usedUncles.contains(uncle.hash) && ancestors.exists(_.hash == uncle.parentHash)
-      }
-    }
+    iter(header, ALPH.MaxUncleAge)
   }
 
   def selectUncles(header: BlockHeader): IOResult[AVector[BlockHeader]] = {
+    val availableUncles = ArrayBuffer.empty[BlockHeader]
     for {
-      // TODO: improve this, we don't need to fetch all recent uncles
-      availableUncles <- getAvailableUncles(header)
+      usedUnclesAndAncestors <- getUsedUnclesAndAncestors(header)
+      (usedUncles, ancestors) = usedUnclesAndAncestors
+      _ <- getUncles(
+        header,
+        uncleHeaders => {
+          availableUncles ++= uncleHeaders.filter(uncle =>
+            !usedUncles.contains(uncle.hash) && ancestors.exists(_.hash == uncle.parentHash)
+          )
+          availableUncles.length >= ALPH.MaxUncleSize
+        }
+      )
     } yield {
       if (availableUncles.length <= ALPH.MaxUncleSize) {
-        availableUncles
+        AVector.from(availableUncles)
       } else {
-        availableUncles.take(ALPH.MaxUncleSize)
+        AVector.from(availableUncles.take(ALPH.MaxUncleSize))
       }
     }
   }
 
   def validateUncles(block: Block): IOResult[Boolean] = {
+    assume(block.uncles.nonEmpty)
+    var remains = block.uncles
     for {
-      parentHeader    <- getBlockHeader(block.parentHash)
-      availableUncles <- getAvailableUncles(parentHeader)
-    } yield {
-      block.uncles.forall(uncle => availableUncles.exists(_.hash == uncle.hash))
-    }
+      parentHeader           <- getBlockHeader(block.parentHash)
+      usedUnclesAndAncestors <- getUsedUnclesAndAncestors(parentHeader)
+      (usedUncles, ancestors) = usedUnclesAndAncestors
+      _ <- getUncles(
+        parentHeader,
+        uncleHeaders => {
+          val availableUncles = uncleHeaders.filter(uncle =>
+            !usedUncles.contains(uncle.hash) && ancestors.exists(_.hash == uncle.parentHash)
+          )
+          remains = remains.filterNot(availableUncles.contains)
+          remains.isEmpty
+        }
+      )
+    } yield remains.isEmpty
   }
 
   def getBlockUnsafe(hash: BlockHash): Block = {
