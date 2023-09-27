@@ -49,6 +49,7 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
     val dummyHeader = BlockHeader.unsafe(
       BlockDeps.unsafe(template.deps),
       template.depStateHash,
+      BlockHeader.EmptyUncleHash,
       Hash.zero,
       template.templateTs,
       template.target,

@@ -71,6 +71,7 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
         BlockHeader.unsafeWithRawDeps(
           AVector.fill(groupConfig.depsNum)(BlockHash.zero),
           Hash.zero,
+          BlockHeader.EmptyUncleHash,
           Hash.zero,
           TimeStamp.now(),
           Target.Max,
@@ -147,6 +148,7 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
         BlockHeader.unsafeWithRawDeps(
           AVector.fill(groupConfig.depsNum)(BlockHash.zero),
           Hash.zero,
+          BlockHeader.EmptyUncleHash,
           Hash.zero,
           TimeStamp.now(),
           Target.Max,
@@ -426,6 +428,7 @@ class BlockSpec extends AlephiumSpec with NoIndexModelGenerators {
           ),
           depStateHash =
             Hash.unsafe(hex"32b9583dd392ea5090a026333f9d79a71b2d04c264114d491e45b373633efb3b"),
+          BlockHeader.EmptyUncleHash,
           txsHash =
             Hash.unsafe(hex"89675dacae61dddb4cb5cb928f01155afe566c14198f8377c16c0d74de184bae"),
           timestamp = TimeStamp.unsafe(1695624515382L),

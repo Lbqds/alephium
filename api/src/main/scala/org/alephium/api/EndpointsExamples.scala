@@ -27,6 +27,7 @@ import org.alephium.protocol.model
 import org.alephium.protocol.model.{
   Address,
   BlockHash,
+  BlockHeader,
   CliqueId,
   ContractId,
   NetworkId,
@@ -176,6 +177,7 @@ trait EndpointsExamples extends ErrorExamples {
     hash.bytes,
     1.toByte,
     hash,
+    BlockHeader.EmptyUncleHash,
     hash,
     hash.bytes
   )

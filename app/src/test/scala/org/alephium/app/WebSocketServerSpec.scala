@@ -53,6 +53,7 @@ class WebSocketServerSpec
       BlockHeader.unsafeWithRawDeps(
         deps,
         Hash.zero,
+        BlockHeader.EmptyUncleHash,
         Hash.hash("bar"),
         TimeStamp.zero,
         Target.Max,

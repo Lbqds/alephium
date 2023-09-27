@@ -48,7 +48,7 @@ trait FlowTipsUtil {
       if (header.isGenesis) {
         genesisHashes(from.value)(currentGroup.value)
       } else {
-        if (currentGroup == ChainIndex.from(dep).to) dep else header.uncleHash(currentGroup)
+        if (currentGroup == ChainIndex.from(dep).to) dep else header.uncleDepHash(currentGroup)
       }
     }
   }

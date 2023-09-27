@@ -36,6 +36,7 @@ object MiningBlob {
     from(
       template.deps,
       template.depStateHash,
+      Block.calUncleHash(template.uncles),
       template.txsHash,
       template.target,
       template.templateTs,
@@ -48,6 +49,7 @@ object MiningBlob {
     from(
       header.blockDeps.deps,
       header.depStateHash,
+      header.uncleHash,
       header.txsHash,
       header.target,
       header.timestamp,
@@ -58,13 +60,22 @@ object MiningBlob {
   private def from(
       deps: AVector[BlockHash],
       depStateHash: Hash,
+      uncleHash: Hash,
       txsHash: Hash,
       target: Target,
       blockTs: TimeStamp,
       transactions: AVector[Transaction]
   ): MiningBlob = {
     val dummyHeader =
-      BlockHeader.unsafe(BlockDeps.unsafe(deps), depStateHash, txsHash, blockTs, target, Nonce.zero)
+      BlockHeader.unsafe(
+        BlockDeps.unsafe(deps),
+        depStateHash,
+        uncleHash,
+        txsHash,
+        blockTs,
+        target,
+        Nonce.zero
+      )
 
     val headerBlob = serialize(dummyHeader)
     val txsBlob    = serialize(transactions)

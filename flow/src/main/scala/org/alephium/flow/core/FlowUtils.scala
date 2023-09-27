@@ -260,6 +260,7 @@ trait FlowUtils
         depStateHash,
         target,
         templateTs,
+        AVector.empty,
         fullTxs :+ coinbaseTx
       )
     }

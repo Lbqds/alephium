@@ -34,6 +34,7 @@ final case class BlockEntry(
     nonce: ByteString,
     version: Byte,
     depStateHash: Hash,
+    uncleHash: Hash,
     txsHash: Hash,
     target: ByteString
 ) {
@@ -60,6 +61,7 @@ final case class BlockEntry(
         version,
         BlockDeps.unsafe(deps),
         depStateHash,
+        uncleHash,
         txsHash,
         timestamp,
         Target.unsafe(target)
@@ -80,6 +82,7 @@ object BlockEntry {
       nonce = block.header.nonce.value,
       version = block.header.version,
       depStateHash = block.header.depStateHash,
+      uncleHash = block.header.uncleHash,
       txsHash = block.header.txsHash,
       target = block.header.target.bits
     )

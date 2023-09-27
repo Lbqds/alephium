@@ -496,6 +496,7 @@ trait FlowFixture
       val header = BlockHeader.unsafe(
         blockDeps,
         depStateHash,
+        BlockHeader.EmptyUncleHash,
         txsHash,
         blockTs,
         target,

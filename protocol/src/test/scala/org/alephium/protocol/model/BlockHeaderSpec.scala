@@ -20,7 +20,7 @@ import org.alephium.crypto.Blake3
 import org.alephium.protocol.Hash
 import org.alephium.protocol.config.{ConsensusConfigFixture, GroupConfigFixture}
 import org.alephium.protocol.model.BlockHash
-import org.alephium.serde.serialize
+import org.alephium.serde.{deserialize, serialize}
 import org.alephium.util.{AlephiumSpec, AVector, Hex, TimeStamp, U256}
 
 class BlockHeaderSpec
@@ -63,7 +63,7 @@ class BlockHeaderSpec
     for {
       i <- 0 until groups
     } {
-      header.uncleHash(GroupIndex.unsafe(i)) is blockDeps.deps(2 + i)
+      header.uncleDepHash(GroupIndex.unsafe(i)) is blockDeps.deps(2 + i)
     }
   }
 
@@ -74,7 +74,7 @@ class BlockHeaderSpec
     assertThrows[AssertionError](genesis.inDeps)
     assertThrows[AssertionError](genesis.outDeps)
     assertThrows[AssertionError](genesis.outTips)
-    assertThrows[AssertionError](genesis.uncleHash(GroupIndex.Zero))
+    assertThrows[AssertionError](genesis.uncleDepHash(GroupIndex.Zero))
     assertThrows[AssertionError](genesis.getIntraDep(GroupIndex.Zero))
   }
 
@@ -101,6 +101,10 @@ class BlockHeaderSpec
     header.version is 0.toByte
   }
 
+  it should "test empty uncle hash" in {
+    BlockHeader.EmptyUncleHash.toHexString is "03170a2e7597b7b7e3d84c05391d139a62b157e78786d8c082f29dcf4c111314"
+  }
+
   it should "serde the snapshots properly" in new ModelSnapshots {
     implicit val basePath = "src/test/resources/models/blockheader"
 
@@ -116,12 +120,14 @@ class BlockHeaderSpec
       blockDeps = BlockDeps.unsafe(AVector.fill(groupConfig.depsNum)(BlockHash.zero)),
       depStateHash =
         Hash.unsafe(hex"e5d64f886664c58378d41fe3b8c29dd7975da59245a4a6bf92c3a47339a9a0a9"),
+      uncleHash = BlockHeader.EmptyUncleHash,
       txsHash = Hash.unsafe(hex"c78682d23662320d6f59d6612f26e2bcb08caff68b589523064924328f6d0d59"),
       timestamp = TimeStamp.unsafe(1),
       target = consensusConfig.maxMiningTarget,
       nonce = nonce1
     )
 
+    deserialize[BlockHeader](serialize(header1)).rightValue.uncleHash is BlockHeader.EmptyUncleHash
     val header1Blob = header1.verify("header1")
 
     val block     = Block(header1, AVector.empty, AVector.empty)
@@ -144,12 +150,42 @@ class BlockHeaderSpec
       ),
       depStateHash =
         Hash.unsafe(hex"798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef"),
+      uncleHash = BlockHeader.EmptyUncleHash,
       txsHash = Hash.unsafe(hex"bdaf9dc514ce7d34b6474b8ca10a3dfb93ba997cb9d5ff1ea724ebe2af48abe5"),
       timestamp = TimeStamp.unsafe(102348),
       target = consensusConfig.maxMiningTarget,
       nonce = nonce2
     )
 
+    deserialize[BlockHeader](serialize(header2)).rightValue.uncleHash is BlockHeader.EmptyUncleHash
     header2.verify("header2")
+
+    info("header3")
+
+    val nonce3 = Nonce.unsafe(U256.Two.toBytes.takeRight(Nonce.byteLength))
+    val header3 = BlockHeader(
+      version = GhostBlockVersion,
+      blockDeps = BlockDeps.build(
+        deps = AVector(
+          BlockHash.unsafe(hex"1b08f56d011b4d1ad498064e21cdcb07ac6a28bc3831be97d96034708de50e07"),
+          BlockHash.unsafe(hex"6a5ab35f69b467512c90d53f9f06f5697f4fad672da15576fa76003ee748e212"),
+          BlockHash.unsafe(hex"aedb5ceabb1e2d2f001096c59726408b86bbde953fe67eb27973cc8056517c93"),
+          BlockHash.unsafe(hex"c2a55cd706725874ab1ffe46eeafc51be5352582f2ff02afb098a127e052135d"),
+          BlockHash.unsafe(hex"4325372753815ecfd0410812a28473824d88e58c8e5686dccfd7a3d1c3a1f405")
+        )
+      ),
+      depStateHash =
+        Hash.unsafe(hex"798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef"),
+      uncleHash = BlockHeader.EmptyUncleHash,
+      txsHash = Hash.unsafe(hex"bdaf9dc514ce7d34b6474b8ca10a3dfb93ba997cb9d5ff1ea724ebe2af48abe5"),
+      timestamp = TimeStamp.unsafe(102348),
+      target = consensusConfig.maxMiningTarget,
+      nonce = nonce3
+    )
+
+    val header3Bytes = serialize(header3)
+    val header2Bytes = serialize(header2)
+    header3Bytes.length - header2Bytes.length is 32
+    header3.verify("header3")
   }
 }

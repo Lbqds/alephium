@@ -427,7 +427,7 @@ trait TxUtils { Self: FlowUtils =>
         None
       } else {
         val header   = fromChain.getBlockHeaderUnsafe(hashes.head)
-        val chainDep = header.uncleHash(chainIndex.to)
+        val chainDep = header.uncleDepHash(chainIndex.to)
         if (targetChain.isBeforeUnsafe(hash, chainDep)) Some(height) else iter(height + 1)
       }
     }

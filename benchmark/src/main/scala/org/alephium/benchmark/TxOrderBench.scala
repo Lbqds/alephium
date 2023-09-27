@@ -47,6 +47,7 @@ class TxOrderBench {
     BlockHeader.unsafeWithRawDeps(
       AVector.fill(groupConfig.depsNum)(BlockHash.zero),
       Hash.zero,
+      BlockHeader.EmptyUncleHash,
       Hash.zero,
       TimeStamp.zero,
       Target.Max,

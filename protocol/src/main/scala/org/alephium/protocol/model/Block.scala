@@ -62,8 +62,8 @@ final case class Block(
     header.parentHash
   }
 
-  def uncleHash(toIndex: GroupIndex): BlockHash = {
-    header.uncleHash(toIndex)
+  def uncleDepHash(toIndex: GroupIndex): BlockHash = {
+    header.uncleDepHash(toIndex)
   }
 
   def getScriptExecutionOrder: AVector[Int] = {
@@ -112,6 +112,9 @@ object Block {
   def calTxsHash(transactions: AVector[Transaction]): Hash =
     MerkleHashable.rootHash(Hash, transactions)
 
+  def calUncleHash(uncles: AVector[BlockHeader]): Hash =
+    Hash.hash(encode(uncles.map(_.hash)))
+
   def from(
       deps: AVector[BlockHash],
       depStateHash: Hash,
@@ -121,9 +124,18 @@ object Block {
       timeStamp: TimeStamp,
       nonce: Nonce
   )(implicit config: GroupConfig): Block = {
-    val txsHash     = calTxsHash(transactions)
-    val blockDeps   = BlockDeps.build(deps)
-    val blockHeader = BlockHeader.unsafe(blockDeps, depStateHash, txsHash, timeStamp, target, nonce)
+    val uncleHash = calUncleHash(uncles)
+    val txsHash   = calTxsHash(transactions)
+    val blockDeps = BlockDeps.build(deps)
+    val blockHeader = BlockHeader.unsafe(
+      blockDeps,
+      depStateHash,
+      uncleHash,
+      txsHash,
+      timeStamp,
+      target,
+      nonce
+    )
     Block(blockHeader, uncles, transactions)
   }
 

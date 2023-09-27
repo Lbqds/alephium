@@ -51,6 +51,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
       ByteString.empty,
       1.toByte,
       Hash.zero,
+      BlockHeader.EmptyUncleHash,
       Hash.zero,
       ByteString.empty
     )
@@ -88,6 +89,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
        |  "nonce":"${Hex.toHexString(blockEntry.nonce)}",
        |  "version":${blockEntry.version},
        |  "depStateHash":"${blockEntry.depStateHash.toHexString}",
+       |  "uncleHash":"${blockEntry.uncleHash.toHexString}"
        |  "txsHash":"${blockEntry.txsHash.toHexString}",
        |  "target":"${Hex.toHexString(blockEntry.target)}"
        |}""".stripMargin

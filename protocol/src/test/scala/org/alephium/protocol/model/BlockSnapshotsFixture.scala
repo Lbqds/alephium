@@ -17,7 +17,6 @@
 package org.alephium.protocol.model
 
 import org.alephium.protocol._
-import org.alephium.protocol.model.BlockHash
 import org.alephium.util.{AVector, Hex, TimeStamp}
 
 trait BlockSnapshotsFixture extends TransactionSnapshotsFixture {
@@ -38,6 +37,7 @@ trait BlockSnapshotsFixture extends TransactionSnapshotsFixture {
       ),
       depStateHash =
         Hash.unsafe(hex"a670c675a926606f1f01fe28660c50621fe31719414f43eccfa871432fe8ce8a"),
+      uncleHash = BlockHeader.EmptyUncleHash,
       txsHash = txsHash,
       // Must be later than org.alephium.protocol.ALPH.LaunchTimestamp
       timestamp = TimeStamp.unsafe(1630167995025L),
