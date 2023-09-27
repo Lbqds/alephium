@@ -549,7 +549,11 @@ trait FlowFixture
   }
 
   def addAndCheck(blockFlow: BlockFlow, header: BlockHeader): Assertion = {
-    val headerValidation = HeaderValidation.build(blockFlow.brokerConfig, blockFlow.consensusConfig)
+    val headerValidation = HeaderValidation.build(
+      blockFlow.brokerConfig,
+      blockFlow.consensusConfig,
+      blockFlow.networkConfig
+    )
     headerValidation.validate(header, blockFlow).isRight is true
     blockFlow.addAndUpdateView(header).isRight is true
   }

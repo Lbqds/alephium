@@ -131,6 +131,9 @@ trait MultiChain extends BlockPool with BlockHeaderPool with FlowDifficultyAdjus
   def getBlockHeader(hash: BlockHash): IOResult[BlockHeader] =
     getHeaderChain(hash).getBlockHeader(hash)
 
+  def getUncles(header: BlockHeader): IOResult[AVector[BlockHeader]] =
+    getBlockChain(header.chainIndex).selectUncles(header)
+
   def getBlockHeaderUnsafe(hash: BlockHash): BlockHeader =
     getHeaderChain(hash).getBlockHeaderUnsafe(hash)
 

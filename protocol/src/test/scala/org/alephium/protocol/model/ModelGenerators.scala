@@ -492,6 +492,22 @@ trait BlockGenerators extends TxGenerators {
 
   def blockGen(
       chainIndex: ChainIndex,
+      blockTs: TimeStamp,
+      parentHash: BlockHash
+  ): Gen[Block] = {
+    val parentIndex = (groupConfig.groups * 2 - 1) / 2 + chainIndex.to.value
+    for {
+      depStateHash <- hashGen
+      depsArray <- Gen
+        .listOfN(2 * groupConfig.groups - 1, blockHashGen)
+        .map(_.toArray)
+      _ = depsArray(parentIndex) = parentHash
+      block <- blockGenOf(chainIndex, AVector.from(depsArray), depStateHash, blockTs, Gen.const(0))
+    } yield block
+  }
+
+  def blockGen(
+      chainIndex: ChainIndex,
       txNumGen: Gen[Int],
       blockTs: TimeStamp
   ): Gen[Block] =
@@ -526,6 +542,7 @@ trait BlockGenerators extends TxGenerators {
       deps: AVector[BlockHash],
       depStateHash: Hash,
       blockTs: TimeStamp,
+      uncles: AVector[BlockHeader],
       txs: AVector[Transaction]
   ): Block = {
     val coinbase = Transaction.coinbase(
@@ -541,7 +558,7 @@ trait BlockGenerators extends TxGenerators {
       val block = Block.from(
         deps,
         depStateHash,
-        AVector.empty,
+        uncles,
         txsWithCoinbase,
         consensusConfig.maxMiningTarget,
         blockTs,
@@ -563,7 +580,7 @@ trait BlockGenerators extends TxGenerators {
     for {
       txNum <- txNumGen
       txs   <- Gen.listOfN(txNum, transactionGen(chainIndexGen = Gen.const(chainIndex)))
-    } yield gen(chainIndex, deps, depStateHash, blockTs, AVector.from(txs))
+    } yield gen(chainIndex, deps, depStateHash, blockTs, AVector.empty, AVector.from(txs))
 
   def chainGenOf(chainIndex: ChainIndex, length: Int, block: Block): Gen[AVector[Block]] =
     chainGenOf(chainIndex, length, block.hash, block.timestamp)

@@ -212,14 +212,22 @@ trait FlowUtils
     for {
       parentHeader <- getBlockHeader(bestDeps.parentHash(chainIndex))
       templateTs = FlowUtils.nextTimeStamp(parentHeader.timestamp)
-      loosenDeps   <- looseUncleDependencies(bestDeps, chainIndex, templateTs)
-      target       <- getNextHashTarget(chainIndex, loosenDeps, templateTs)
-      groupView    <- getMutableGroupView(chainIndex.from, loosenDeps)
+      loosenDeps <- looseUncleDependencies(bestDeps, chainIndex, templateTs)
+      target     <- getNextHashTarget(chainIndex, loosenDeps, templateTs)
+      groupView  <- getMutableGroupView(chainIndex.from, loosenDeps)
+      hardFork = networkConfig.getHardFork(templateTs)
+      uncles <-
+        if (hardFork.isGhostEnabled()) {
+          getUncles(parentHeader)
+        } else {
+          Right(AVector.empty[BlockHeader])
+        }
       txCandidates <- collectTransactions(chainIndex, groupView, bestDeps)
       template <- prepareBlockFlow(
         chainIndex,
         loosenDeps,
         groupView,
+        uncles,
         txCandidates,
         target,
         templateTs,
@@ -242,6 +250,7 @@ trait FlowUtils
       chainIndex: ChainIndex,
       loosenDeps: BlockDeps,
       groupView: BlockFlowGroupView[WorldState.Cached],
+      uncles: AVector[BlockHeader],
       candidates: AVector[TransactionTemplate],
       target: Target,
       templateTs: TimeStamp,
@@ -260,7 +269,7 @@ trait FlowUtils
         depStateHash,
         target,
         templateTs,
-        AVector.empty,
+        uncles,
         fullTxs :+ coinbaseTx
       )
     }

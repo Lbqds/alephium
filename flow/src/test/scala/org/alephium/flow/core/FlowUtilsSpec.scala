@@ -346,4 +346,52 @@ class FlowUtilsSpec extends AlephiumSpec {
     blockFlow.getDifficultyMetric().rightValue is
       blockFlow.genesisBlocks.head.head.target.getDifficulty()
   }
+
+  trait PrepareBlockFlowFixture extends FlowFixture {
+    lazy val chainIndex = ChainIndex.unsafe(0, 0)
+    def prepare(): BlockHash = {
+      val block0 = emptyBlock(blockFlow, chainIndex)
+      val block1 = emptyBlock(blockFlow, chainIndex)
+      addAndCheck(blockFlow, block0, block1)
+
+      blockFlow.getMaxHeight(chainIndex).rightValue is 1
+      val blockHashes = blockFlow.getHashes(chainIndex, 1).rightValue
+      blockHashes.length is 2
+      blockHashes.contains(block0.hash) is true
+      blockHashes.contains(block1.hash) is true
+      val header = blockFlow.getBlockHeaderUnsafe(blockHashes.head)
+      blockFlow.getUncles(header).rightValue.nonEmpty is true
+      blockHashes.last
+    }
+  }
+
+  it should "prepare block without uncles before ghost hardfork" in new PrepareBlockFlowFixture {
+    override val configValues = Map(("alephium.network.ghost-hard-fork-timestamp", Long.MaxValue))
+
+    prepare()
+    val blockTemplate =
+      blockFlow.prepareBlockFlowUnsafe(chainIndex, getGenesisLockupScript(chainIndex))
+    networkConfig.getHardFork(blockTemplate.templateTs) is HardFork.Leman
+    blockTemplate.uncles.isEmpty is true
+
+    val block = mine(blockFlow, blockTemplate)
+    block.header.version is DefaultBlockVersion
+    addAndCheck(blockFlow, block)
+  }
+
+  it should "prepare block with uncles after ghost hardfork" in new PrepareBlockFlowFixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.now().millis))
+
+    val uncleHash = prepare()
+    val blockTemplate =
+      blockFlow.prepareBlockFlowUnsafe(chainIndex, getGenesisLockupScript(chainIndex))
+    networkConfig.getHardFork(blockTemplate.templateTs) is HardFork.Ghost
+    blockTemplate.uncles.length is 1
+    blockTemplate.uncles.head.hash is uncleHash
+
+    val block = mine(blockFlow, blockTemplate)
+    block.header.version is GhostBlockVersion
+    addAndCheck(blockFlow, block)
+  }
 }

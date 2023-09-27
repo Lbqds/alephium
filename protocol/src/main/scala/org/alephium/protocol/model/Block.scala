@@ -25,7 +25,7 @@ import akka.util.ByteString
 
 import org.alephium.crypto.MerkleHashable
 import org.alephium.protocol.Hash
-import org.alephium.protocol.config.{ConsensusConfig, GroupConfig}
+import org.alephium.protocol.config.{ConsensusConfig, GroupConfig, NetworkConfig}
 import org.alephium.protocol.model.BlockHash
 import org.alephium.serde.{_deserialize => _decode, serialize => encode, _}
 import org.alephium.util.{AVector, TimeStamp, U256}
@@ -115,6 +115,7 @@ object Block {
   def calUncleHash(uncles: AVector[BlockHeader]): Hash =
     Hash.hash(encode(uncles.map(_.hash)))
 
+  // scalastyle:off parameter.number
   def from(
       deps: AVector[BlockHash],
       depStateHash: Hash,
@@ -123,7 +124,7 @@ object Block {
       target: Target,
       timeStamp: TimeStamp,
       nonce: Nonce
-  )(implicit config: GroupConfig): Block = {
+  )(implicit config: GroupConfig, networkConfig: NetworkConfig): Block = {
     val uncleHash = calUncleHash(uncles)
     val txsHash   = calTxsHash(transactions)
     val blockDeps = BlockDeps.build(deps)
