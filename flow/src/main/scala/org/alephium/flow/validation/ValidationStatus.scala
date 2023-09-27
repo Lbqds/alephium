@@ -54,6 +54,7 @@ final case object InvalidDepsIndex                                  extends Inva
 final case class MissingDeps(hashes: AVector[BlockHash])            extends InvalidHeaderStatus
 final case object InvalidDepStateHash                               extends InvalidHeaderStatus
 final case class HeaderIOError(e: IOError)                          extends InvalidHeaderStatus
+case object InvalidUncleHashBeforeGhostHardFork                     extends InvalidHeaderStatus
 final case object EmptyTransactionList                              extends InvalidBlockStatus
 final case object TooManyTransactions                               extends InvalidBlockStatus
 final case object TxGasPriceNonDecreasing                           extends InvalidBlockStatus
@@ -68,6 +69,11 @@ final case object BlockDoubleSpending                               extends Inva
 final case class ExistInvalidTx(t: Transaction, e: InvalidTxStatus) extends InvalidBlockStatus
 final case object InvalidFlowDeps                                   extends InvalidBlockStatus
 final case object InvalidFlowTxs                                    extends InvalidBlockStatus
+case object InvalidUnclesBeforeGhostHardFork                        extends InvalidBlockStatus
+case object InvalidUncleSize                                        extends InvalidBlockStatus
+case object DuplicatedUncles                                        extends InvalidBlockStatus
+case object InvalidUncleHash                                        extends InvalidBlockStatus
+case object InvalidUncles                                           extends InvalidBlockStatus
 
 object ValidationStatus {
   private[validation] def invalidHeader[T](status: InvalidHeaderStatus): HeaderValidationResult[T] =

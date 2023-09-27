@@ -26,6 +26,8 @@ import org.alephium.protocol.vm.{BlockEnv, GasPrice, LogConfig, WorldState}
 import org.alephium.serde._
 import org.alephium.util.{AVector, EitherF, U256}
 
+// scalastyle:off number.of.methods
+
 trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[WorldState.Cached]] {
   import ValidationStatus._
 
@@ -130,8 +132,55 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
       _          <- checkTotalGas(block)
       _          <- checkMerkleRoot(block)
       _          <- checkFlow(block, flow)
+      _          <- checkUncles(block, flow)
       sideResult <- checkTxs(block.chainIndex, block, flow)
     } yield sideResult
+  }
+
+  private def checkUncles(block: Block, flow: BlockFlow): BlockValidationResult[Unit] = {
+    if (brokerConfig.contains(block.chainIndex.from)) {
+      val hardFork = networkConfig.getHardFork(block.timestamp)
+      if (hardFork.isGhostEnabled() && block.uncles.nonEmpty) {
+        for {
+          _       <- checkUncleSize(block)
+          _       <- checkDuplicateUncles(block)
+          _       <- checkUncleHash(block)
+          isValid <- from(flow.getBlockChain(block.chainIndex).validateUncles(block))
+          _       <- if (isValid) validBlock(()) else invalidBlock(InvalidUncles)
+          _       <- block.uncles.foreachE(header => headerValidation.validate(header, flow))
+        } yield ()
+      } else if (block.uncles.nonEmpty) {
+        invalidBlock(InvalidUnclesBeforeGhostHardFork)
+      } else {
+        validBlock(())
+      }
+    } else {
+      validBlock(())
+    }
+  }
+
+  @inline private def checkUncleSize(block: Block): BlockValidationResult[Unit] = {
+    if (block.uncles.length > ALPH.MaxUncleSize) {
+      invalidBlock(InvalidUncleSize)
+    } else {
+      validBlock(())
+    }
+  }
+
+  @inline private def checkDuplicateUncles(block: Block): BlockValidationResult[Unit] = {
+    if (block.uncles.toSeq.distinctBy(_.hash).length != block.uncles.length) {
+      invalidBlock(DuplicatedUncles)
+    } else {
+      validBlock(())
+    }
+  }
+
+  @inline private def checkUncleHash(block: Block): BlockValidationResult[Unit] = {
+    if (Block.calUncleHash(block.uncles) != block.header.uncleHash) {
+      invalidBlock(InvalidUncleHash)
+    } else {
+      validBlock(())
+    }
   }
 
   private def checkTxs(

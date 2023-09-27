@@ -18,7 +18,11 @@ package org.alephium.protocol.model
 
 import org.alephium.crypto.Blake3
 import org.alephium.protocol.Hash
-import org.alephium.protocol.config.{ConsensusConfigFixture, GroupConfigFixture, NetworkConfigFixture}
+import org.alephium.protocol.config.{
+  ConsensusConfigFixture,
+  GroupConfigFixture,
+  NetworkConfigFixture
+}
 import org.alephium.protocol.model.BlockHash
 import org.alephium.serde.{deserialize, serialize}
 import org.alephium.util.{AlephiumSpec, AVector, Duration, Hex, TimeStamp, U256}
@@ -103,6 +107,7 @@ class BlockHeaderSpec
 
   it should "test empty uncle hash" in {
     BlockHeader.EmptyUncleHash.toHexString is "03170a2e7597b7b7e3d84c05391d139a62b157e78786d8c082f29dcf4c111314"
+    Block.calUncleHash(AVector.empty[BlockHeader]) is BlockHeader.EmptyUncleHash
   }
 
   it should "get block version" in {

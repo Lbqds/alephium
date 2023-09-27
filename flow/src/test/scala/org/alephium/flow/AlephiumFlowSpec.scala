@@ -418,7 +418,7 @@ trait FlowFixture
 
     val target     = blockFlow.getNextHashTarget(chainIndex, deps, blockTs).rightValue
     val coinbaseTx = Transaction.coinbase(chainIndex, txs, lockupScript, target, blockTs)
-    mine0(blockFlow, chainIndex, deps, txs :+ coinbaseTx, blockTs, target)
+    mine0(blockFlow, chainIndex, deps, AVector.empty, txs :+ coinbaseTx, blockTs, target)
   }
 
   def mineWithoutCoinbase(
@@ -433,7 +433,12 @@ trait FlowFixture
     val coinbaseTx =
       Transaction.coinbase(chainIndex, txs, lockupScript, consensusConfig.maxMiningTarget, blockTs)
 
-    mine0(blockFlow, chainIndex, deps, txs :+ coinbaseTx, blockTs)
+    mine0(blockFlow, chainIndex, deps, AVector.empty, txs :+ coinbaseTx, blockTs)
+  }
+
+  def mineBlockTemplate(blockFlow: BlockFlow, chainIndex: ChainIndex): Block = {
+    val miner = getGenesisLockupScript(chainIndex.to)
+    mine(blockFlow, blockFlow.prepareBlockFlowUnsafe(chainIndex, miner))
   }
 
   def mine(blockFlow: BlockFlow, template: BlockFlowTemplate): Block = {
@@ -441,6 +446,7 @@ trait FlowFixture
       blockFlow,
       template.index,
       template.deps,
+      template.uncles,
       template.transactions,
       template.templateTs,
       template.target
@@ -451,21 +457,31 @@ trait FlowFixture
       blockFlow: BlockFlow,
       chainIndex: ChainIndex,
       deps: AVector[BlockHash],
+      uncles: AVector[BlockHeader],
       txs: AVector[Transaction],
       blockTs: TimeStamp,
       target: Target = consensusConfig.maxMiningTarget
   ): Block = {
-    mine0(blockFlow, chainIndex, BlockDeps.unsafe(deps), txs, blockTs, target)
+    mine0(blockFlow, chainIndex, BlockDeps.unsafe(deps), uncles, txs, blockTs, target)
   }
 
   def reMine(blockFlow: BlockFlow, chainIndex: ChainIndex, block: Block): Block = {
-    mine0(blockFlow, chainIndex, block.blockDeps, block.transactions, block.timestamp, block.target)
+    mine0(
+      blockFlow,
+      chainIndex,
+      block.blockDeps,
+      block.uncles,
+      block.transactions,
+      block.timestamp,
+      block.target
+    )
   }
 
   def mine0(
       blockFlow: BlockFlow,
       chainIndex: ChainIndex,
       deps: BlockDeps,
+      uncles: AVector[BlockHeader],
       txs: AVector[Transaction],
       blockTs: TimeStamp,
       target: Target = consensusConfig.maxMiningTarget
@@ -473,10 +489,11 @@ trait FlowFixture
     val loosenDeps = blockFlow.looseUncleDependencies(deps, chainIndex, TimeStamp.now()).rightValue
     val depStateHash =
       blockFlow.getDepStateHash(loosenDeps, chainIndex.from).rightValue
-    val txsHash = Block.calTxsHash(txs)
+    val txsHash   = Block.calTxsHash(txs)
+    val uncleHash = Block.calUncleHash(uncles)
     Block(
-      mineHeader(chainIndex, loosenDeps.deps, depStateHash, txsHash, blockTs, target),
-      AVector.empty,
+      mineHeader(chainIndex, loosenDeps.deps, depStateHash, uncleHash, txsHash, blockTs, target),
+      uncles,
       txs
     )
   }
@@ -485,6 +502,7 @@ trait FlowFixture
       chainIndex: ChainIndex,
       deps: AVector[BlockHash],
       depStateHash: Hash,
+      uncleHash: Hash,
       txsHash: Hash,
       blockTs: TimeStamp,
       target: Target = consensusConfig.maxMiningTarget
@@ -496,7 +514,7 @@ trait FlowFixture
       val header = BlockHeader.unsafe(
         blockDeps,
         depStateHash,
-        BlockHeader.EmptyUncleHash,
+        uncleHash,
         txsHash,
         blockTs,
         target,

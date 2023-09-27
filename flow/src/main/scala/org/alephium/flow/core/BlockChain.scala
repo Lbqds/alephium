@@ -30,6 +30,8 @@ import org.alephium.protocol.vm.WorldState
 import org.alephium.serde.Serde
 import org.alephium.util.{AVector, TimeStamp}
 
+// scalastyle:off number.of.methods
+
 trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
   def blockStorage: BlockStorage
   def txStorage: TxStorage
@@ -115,6 +117,15 @@ trait BlockChain extends BlockPool with BlockHeaderChain with BlockHashChain {
       } else {
         availableUncles.take(ALPH.MaxUncleSize)
       }
+    }
+  }
+
+  def validateUncles(block: Block): IOResult[Boolean] = {
+    for {
+      parentHeader    <- getBlockHeader(block.parentHash)
+      availableUncles <- getAvailableUncles(parentHeader)
+    } yield {
+      block.uncles.forall(uncle => availableUncles.exists(_.hash == uncle.hash))
     }
   }
 

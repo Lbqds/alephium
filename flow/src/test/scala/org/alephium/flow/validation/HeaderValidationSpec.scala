@@ -26,7 +26,7 @@ import org.alephium.crypto.Blake3
 import org.alephium.flow.{AlephiumFlowSpec, FlowFixture}
 import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.model._
-import org.alephium.util.{AVector, Duration}
+import org.alephium.util.{AVector, Duration, TimeStamp}
 
 class HeaderValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsLike {
   trait Fixture {
@@ -135,24 +135,24 @@ class HeaderValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsL
   behavior of "normal header validation"
 
   trait HeaderFixture extends Fixture with FlowFixture {
+    def ghostHardForkTimestamp: TimeStamp = TimeStamp.now()
+
     override val configValues = Map(
       ("alephium.broker.broker-num", 1),
-      ("alephium.consensus.num-zeros-at-least-in-hash", 1)
+      ("alephium.consensus.num-zeros-at-least-in-hash", 1),
+      ("alephium.network.ghost-hard-fork-timestamp", ghostHardForkTimestamp.millis)
     )
 
-    val chainIndex = ChainIndex.unsafe(1, 2)
-    val header0 = {
+    lazy val chainIndex      = ChainIndex.unsafe(1, 2)
+    lazy val headerValidator = HeaderValidation.build
+    lazy val (header0, header) = {
       val block0 = emptyBlock(blockFlow, chainIndex)
       addAndCheck(blockFlow, block0)
-      block0.header
-    }
-    val header = {
       val block1 = emptyBlock(blockFlow, chainIndex)
       addAndCheck(blockFlow, block1)
-      block1.header
+      headerValidator.getParentHeader(blockFlow, block1.header) isE block0.header
+      (block0.header, block1.header)
     }
-    val headerValidator = HeaderValidation.build
-    headerValidator.getParentHeader(blockFlow, header) isE header0
 
     def updateNonce(modified: BlockHeader): BlockHeader = {
       nonceGen
@@ -186,16 +186,48 @@ class HeaderValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsL
     passValidation(header)
   }
 
-  it should "check header version" in new HeaderFixture {
-    val modified0 = updateNonce(header.copy(version = DefaultBlockVersion))
+  it should "check header version before ghost hardfork" in new HeaderFixture {
+    override def ghostHardForkTimestamp = TimeStamp.Max
+
+    header.version is DefaultBlockVersion
+    passValidation(header)
+    val modified = updateNonce(header.copy(version = GhostBlockVersion))
+    failValidation(modified, InvalidBlockVersion)
+  }
+
+  it should "check header version after ghost hardfork" in new HeaderFixture {
+    header.version is GhostBlockVersion
+    passValidation(header)
+    val modified = updateNonce(header.copy(version = DefaultBlockVersion))
+    failValidation(modified, InvalidBlockVersion)
+  }
+
+  it should "check uncle hash before ghost hardfork" in new HeaderFixture {
+    override def ghostHardForkTimestamp = TimeStamp.Max
+
+    header.uncleHash is BlockHeader.EmptyUncleHash
+    passValidation(header)
+    val modified = updateNonce(header.copy(uncleHash = Hash.random))
+    failValidation(modified, InvalidUncleHashBeforeGhostHardFork)
+  }
+
+  it should "check uncle hash after ghost hardfork" in new HeaderFixture {
+    val modified0 = updateNonce(header.copy(uncleHash = BlockHeader.EmptyUncleHash))
     passValidation(modified0)
+    val modified1 = updateNonce(header.copy(uncleHash = Hash.random))
+    passValidation(modified1)
   }
 
   it should "check header timestamp increasing" in new HeaderFixture {
     val modified0 = updateNonce(header.copy(timestamp = header0.timestamp))
     failValidation(modified0, NoIncreasingTimeStamp)
 
-    val modified1 = updateNonce(header.copy(timestamp = ALPH.LaunchTimestamp.plusMillisUnsafe(-1)))
+    val modified1 = updateNonce(
+      header.copy(
+        version = DefaultBlockVersion,
+        timestamp = ALPH.LaunchTimestamp.plusMillisUnsafe(-1)
+      )
+    )
     failValidation(modified1, EarlierThanLaunchTimeStamp)
   }
 
@@ -267,6 +299,7 @@ class HeaderValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsL
             header.chainIndex,
             newDeps,
             Hash.zero,
+            BlockHeader.EmptyUncleHash,
             header.txsHash,
             header.timestamp,
             header.target

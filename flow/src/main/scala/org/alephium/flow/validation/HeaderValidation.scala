@@ -73,6 +73,7 @@ trait HeaderValidation extends Validation[BlockHeader, InvalidHeaderStatus, Unit
   ): HeaderValidationResult[Unit] = {
     for {
       _      <- checkVersion(header)
+      _      <- checkUncleHash(header)
       parent <- getParentHeader(flow, header) // parent should exist as checked in ChainHandler
       _      <- checkTimeStampIncreasing(header, parent)
       _      <- checkTimeStampDrift(header)
@@ -112,6 +113,7 @@ trait HeaderValidation extends Validation[BlockHeader, InvalidHeaderStatus, Unit
   protected[validation] def checkGenesisWorkTarget(header: BlockHeader): HeaderValidationResult[Unit]
 
   protected[validation] def checkVersion(header: BlockHeader)(implicit networkConfig: NetworkConfig): HeaderValidationResult[Unit]
+  protected[validation] def checkUncleHash(header: BlockHeader)(implicit networkConfig: NetworkConfig): HeaderValidationResult[Unit]
   protected[validation] def checkTimeStampIncreasing(header: BlockHeader, parent: BlockHeader): HeaderValidationResult[Unit]
   protected[validation] def checkTimeStampDrift(header: BlockHeader): HeaderValidationResult[Unit]
   protected[validation] def checkWorkAmount(header: BlockHeader): HeaderValidationResult[Unit]
@@ -186,6 +188,17 @@ object HeaderValidation {
     ): HeaderValidationResult[Unit] = {
       if (header.target != consensusConfig.maxMiningTarget) {
         invalidHeader(InvalidGenesisWorkTarget)
+      } else {
+        validHeader(())
+      }
+    }
+
+    protected[validation] def checkUncleHash(
+        header: BlockHeader
+    )(implicit networkConfig: NetworkConfig): HeaderValidationResult[Unit] = {
+      val hardFork = networkConfig.getHardFork(header.timestamp)
+      if (hardFork < HardFork.Ghost && header.uncleHash != BlockHeader.EmptyUncleHash) {
+        invalidHeader(InvalidUncleHashBeforeGhostHardFork)
       } else {
         validHeader(())
       }
