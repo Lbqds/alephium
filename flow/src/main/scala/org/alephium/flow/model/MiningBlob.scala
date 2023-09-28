@@ -29,7 +29,8 @@ import org.alephium.util.{AVector, TimeStamp}
 final case class MiningBlob(
     headerBlob: ByteString,
     target: BigInteger,
-    txsBlob: ByteString
+    txsBlob: ByteString,
+    unclesBlob: ByteString
 )
 
 object MiningBlob {
@@ -41,7 +42,8 @@ object MiningBlob {
       template.txsHash,
       template.target,
       template.templateTs,
-      template.transactions
+      template.transactions,
+      template.uncles
     )
   }
 
@@ -54,10 +56,12 @@ object MiningBlob {
       header.txsHash,
       header.target,
       header.timestamp,
-      block.transactions
+      block.transactions,
+      block.uncles
     )
   }
 
+  // scalastyle:off parameter.number
   private def from(
       deps: AVector[BlockHash],
       depStateHash: Hash,
@@ -65,7 +69,8 @@ object MiningBlob {
       txsHash: Hash,
       target: Target,
       blockTs: TimeStamp,
-      transactions: AVector[Transaction]
+      transactions: AVector[Transaction],
+      uncles: AVector[BlockHeader]
   )(implicit networkConfig: NetworkConfig): MiningBlob = {
     val dummyHeader =
       BlockHeader.unsafe(
@@ -80,6 +85,7 @@ object MiningBlob {
 
     val headerBlob = serialize(dummyHeader)
     val txsBlob    = serialize(transactions)
-    MiningBlob(headerBlob.drop(Nonce.byteLength), target.value, txsBlob)
+    val unclesBlob = serialize(uncles)
+    MiningBlob(headerBlob.drop(Nonce.byteLength), target.value, txsBlob, unclesBlob)
   }
 }

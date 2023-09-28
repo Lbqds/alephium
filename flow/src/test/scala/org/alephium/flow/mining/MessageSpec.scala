@@ -50,7 +50,7 @@ class MessageSpec extends AlephiumSpec with GroupConfigFixture.Default {
 
   "ServerMessage" should "serde properly" in {
     val messages = Seq(
-      Jobs(AVector(Job(0, 1, hex"aa", hex"bb", BigInteger.ZERO))),
+      Jobs(AVector(Job(0, 1, hex"aa", hex"bb", BigInteger.ZERO, hex"00"))),
       SubmitResult(0, 1, true),
       SubmitResult(0, 1, false)
     )
@@ -66,11 +66,12 @@ class MessageSpec extends AlephiumSpec with GroupConfigFixture.Default {
 
   it should "pass explicit hex string serialization examples" in {
     {
-      val message: ServerMessage = Jobs(AVector(Job(0, 1, hex"aa", hex"bb", BigInteger.ONE)))
-      val serializedJobs         = ServerMessage.serialize(message)
+      val message: ServerMessage =
+        Jobs(AVector(Job(0, 1, hex"aa", hex"bb", BigInteger.ONE, hex"00")))
+      val serializedJobs = ServerMessage.serialize(message)
       serializedJobs is
         // message.length (4 bytes)
-        hex"0000001c" ++
+        hex"00000021" ++
         // message type (1 byte)
         hex"00" ++
         // jobs.length (4 bytes)
@@ -84,7 +85,9 @@ class MessageSpec extends AlephiumSpec with GroupConfigFixture.Default {
         // txsBlob.length (4 bytes) ++ blob bytes
         hex"00000001" ++ hex"bb" ++
         // target.length (4 bytes) ++ target bytes
-        hex"00000001" ++ hex"01"
+        hex"00000001" ++ hex"01" ++
+        // unclesBlob.length (4 bytes) ++ blob bytes
+        hex"00000001" ++ hex"00"
     }
 
     {
