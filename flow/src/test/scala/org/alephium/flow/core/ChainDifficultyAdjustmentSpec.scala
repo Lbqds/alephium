@@ -91,6 +91,10 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
     ): IOResult[Option[Duration]] = {
       calTimeSpan(hash, getHeight(hash).rightValue, nextTimeStamp)
     }
+
+    def calNextTarget(hash: BlockHash, target: Target, hasUncle: Boolean): Target = {
+      calNextHashTargetRaw(hash, target, ALPH.LaunchTimestamp, TimeStamp.now(), hasUncle).rightValue
+    }
   }
 
   it should "calculate target correctly" in new MockFixture {
@@ -122,12 +126,8 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
       val latestHash = data.last._1
       fixture.chainBackUntil(latestHash, 0) isE data.tail.map(_._1)
       val currentTarget = Target.unsafe(BigInteger.valueOf(Random.nextLong(Long.MaxValue)))
-      fixture.calNextHashTargetRaw(
-        latestHash,
-        currentTarget,
-        ALPH.LaunchTimestamp,
-        TimeStamp.now()
-      ) isE currentTarget
+      fixture.calNextTarget(latestHash, currentTarget, hasUncle = false) is currentTarget
+      fixture.calNextTarget(latestHash, currentTarget, hasUncle = true) is currentTarget
     }
   }
 
@@ -144,57 +144,90 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
       calTimeSpan(hash, height, TimeStamp.now()) isE Some(
         data(height)._2 deltaUnsafe data(height - 17)._2
       )
-      calNextHashTargetRaw(
-        hash,
-        currentTarget,
-        ALPH.LaunchTimestamp,
-        TimeStamp.now()
-      ) isE currentTarget
+      calNextTarget(hash, currentTarget, hasUncle = false) is currentTarget
+      calNextTarget(hash, currentTarget, hasUncle = true) is currentTarget
     }
   }
 
-  it should "decrease the target when blocktime keep increasing" in new MockFixture {
+  it should "increase the target when blocktime keep increasing" in new MockFixture {
     var currentTs = TimeStamp.now()
     var ratio     = 1.0
     val data = AVector.tabulate(2 * threshold) { _ =>
-      ratio = ratio * 1.2
+      ratio = ratio * 1.004
       val delta = (consensusConfig.expectedTimeSpan.millis * ratio).toLong
       currentTs = currentTs.plusMillisUnsafe(delta)
       BlockHash.random -> currentTs
     }
-    setup(data)
+    setup(data :+ {
+      val blockTs =
+        data(threshold - 1)._2.plusMillisUnsafe(consensusConfig.windowTimeSpanMax.millis * 2)
+      BlockHash.random -> blockTs
+    })
+    val target     = Target.unsafe(BigInteger.valueOf(1024))
+    var lastTarget = target
 
     (threshold until 2 * threshold).foreach { height =>
-      val hash          = getHash(height)
-      val currentTarget = Target.unsafe(BigInteger.valueOf(1024))
-      calTimeSpan(hash, height, TimeStamp.now()) isE Some(
-        data(height)._2 deltaUnsafe data(height - 17)._2
-      )
-      calNextHashTargetRaw(hash, currentTarget, ALPH.LaunchTimestamp, TimeStamp.now()) isE
-        reTarget(currentTarget, consensusConfig.windowTimeSpanMax.millis)
+      val hash     = getHash(height)
+      val timeSpan = calTimeSpan(hash, height, TimeStamp.now())
+      timeSpan isE Some(data(height)._2 deltaUnsafe data(height - 17)._2)
+      val expectedTarget = calNextTarget(hash, target, hasUncle = false)
+      expectedTarget > lastTarget is true
+      calNextTarget(hash, target, hasUncle = true) > expectedTarget is true
+      lastTarget = expectedTarget
     }
+
+    val hash     = getHash(2 * threshold)
+    val timeSpan = calTimeSpan(hash, 2 * threshold, TimeStamp.now()).rightValue.get
+    timeSpan > consensusConfig.windowTimeSpanMax is true
+    calNextTarget(hash, target, hasUncle = false) is reTarget(
+      target,
+      consensusConfig.windowTimeSpanMax.millis
+    )
+    calNextTarget(hash, target, hasUncle = true) is reTarget(
+      target,
+      consensusConfig.windowTimeSpanMax.millis
+    )
   }
 
-  it should "increase the target when blocktime keep decreasing" in new MockFixture {
+  it should "decrease the target when blocktime keep decreasing" in new MockFixture {
     var currentTs = TimeStamp.now()
     var ratio     = 1.0
     val data = AVector.tabulate(2 * threshold) { _ =>
-      ratio = ratio * 1.2
+      ratio = ratio * 1.004
       val delta = (consensusConfig.expectedTimeSpan.millis / ratio).toLong
       currentTs = currentTs.plusMillisUnsafe(delta)
       BlockHash.random -> currentTs
     }
-    setup(data)
+    setup(data :+ {
+      val blockTs =
+        data(threshold - 1)._2.plusMillisUnsafe(consensusConfig.windowTimeSpanMin.millis / 2)
+      BlockHash.random -> blockTs
+    })
+    val target     = Target.unsafe(BigInteger.valueOf(1024))
+    var lastTarget = target
 
     (threshold until 2 * threshold).foreach { height =>
-      val hash          = getHash(height)
-      val currentTarget = Target.unsafe(BigInteger.valueOf(1024))
+      val hash = getHash(height)
       calTimeSpan(hash, height, TimeStamp.now()) isE Some(
         data(height)._2 deltaUnsafe data(height - 17)._2
       )
-      calNextHashTargetRaw(hash, currentTarget, ALPH.LaunchTimestamp, TimeStamp.now()) isE
-        reTarget(currentTarget, consensusConfig.windowTimeSpanMin.millis)
+      val expectedTarget = calNextTarget(hash, target, hasUncle = false)
+      expectedTarget < lastTarget is true
+      calNextTarget(hash, target, hasUncle = true) < expectedTarget is true
+      lastTarget = expectedTarget
     }
+
+    val hash     = getHash(2 * threshold)
+    val timeSpan = calTimeSpan(hash, 2 * threshold, TimeStamp.now()).rightValue.get
+    timeSpan < consensusConfig.windowTimeSpanMin is true
+    calNextTarget(hash, target, hasUncle = false) is reTarget(
+      target,
+      consensusConfig.windowTimeSpanMin.millis
+    )
+    calNextTarget(hash, target, hasUncle = true) is reTarget(
+      target,
+      consensusConfig.windowTimeSpanMin.millis
+    )
   }
 
   it should "decrease the target when difficulty bomb enabled" in new MockFixture {
@@ -296,7 +329,8 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
         getHash(currentHeight),
         initialTarget,
         ALPH.LaunchTimestamp,
-        TimeStamp.now()
+        TimeStamp.now(),
+        hasUncle = false
       ).rightValue
     currentTarget is initialTarget
     def stepSimulation(finalTarget: Target) = {
@@ -311,7 +345,8 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
         newHash,
         currentTarget,
         ALPH.LaunchTimestamp,
-        TimeStamp.now()
+        TimeStamp.now(),
+        hasUncle = false
       ).rightValue
     }
 
@@ -363,7 +398,8 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
         hash,
         currentTarget,
         ALPH.LaunchTimestamp,
-        getTimestamp(hash).rightValue
+        getTimestamp(hash).rightValue,
+        hasUncle = false
       ) isE
         reTarget(currentTarget, consensusConfig.windowTimeSpanMin.millis)
     }
@@ -375,7 +411,8 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
         hash,
         currentTarget,
         ALPH.LaunchTimestamp,
-        getTimestamp(hash).rightValue
+        getTimestamp(hash).rightValue,
+        hasUncle = false
       ) isE difficultyBombPatchTarget
     }
 
@@ -388,7 +425,8 @@ class ChainDifficultyAdjustmentSpec extends AlephiumFlowSpec { Test =>
         hash,
         currentTarget,
         ALPH.LaunchTimestamp,
-        getTimestamp(hash).rightValue
+        getTimestamp(hash).rightValue,
+        hasUncle = false
       ) isE
         reTarget(currentTarget, consensusConfig.windowTimeSpanMin.millis)
     }

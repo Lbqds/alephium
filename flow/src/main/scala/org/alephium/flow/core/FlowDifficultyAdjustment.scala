@@ -43,7 +43,10 @@ trait FlowDifficultyAdjustment {
       deps: BlockDeps,
       nextTimeStamp: TimeStamp
   ): IOResult[Target] = {
-    if (networkConfig.getHardFork(nextTimeStamp).isLemanEnabled()) {
+    val hardFork = networkConfig.getHardFork(nextTimeStamp)
+    if (hardFork.isGhostEnabled()) {
+      getNextHashTargetGhost(chainIndex, deps)
+    } else if (hardFork.isLemanEnabled()) {
       getNextHashTargetLeman(chainIndex, deps)
     } else {
       getNextHashTargetGenesis(chainIndex, deps, nextTimeStamp)
@@ -68,10 +71,10 @@ trait FlowDifficultyAdjustment {
     }
   }
 
-  def getNextHashTargetLeman(
+  private def prepareCalNextHashTargetUnsafe(
       chainIndex: ChainIndex,
       deps: BlockDeps
-  ): IOResult[Target] = IOUtils.tryExecute {
+  ): (Target, Duration) = {
     val commonIntraGroupDeps             = calCommonIntraGroupDepsUnsafe(deps, chainIndex.from)
     val (diffSum, timeSpanSum, oldestTs) = getDiffAndTimeSpanUnsafe(commonIntraGroupDeps)
     val diffAverage                      = diffSum.divide(brokerConfig.chainNum)
@@ -80,7 +83,24 @@ trait FlowDifficultyAdjustment {
     val chainDep   = deps.getOutDep(chainIndex.to)
     val heightGap  = calHeightDiffUnsafe(chainDep, oldestTs)
     val targetDiff = consensusConfig.penalizeDiffForHeightGapLeman(diffAverage, heightGap)
-    ChainDifficultyAdjustment.calNextHashTargetRaw(targetDiff.getTarget(), timeSpanAverage)
+    (targetDiff.getTarget(), timeSpanAverage)
+  }
+
+  def getNextHashTargetLeman(
+      chainIndex: ChainIndex,
+      deps: BlockDeps
+  ): IOResult[Target] = IOUtils.tryExecute {
+    val (target, timeSpanAverage) = prepareCalNextHashTargetUnsafe(chainIndex, deps)
+    ChainDifficultyAdjustment.calNextHashTargetRaw(target, timeSpanAverage, hasUncle = false)
+  }
+
+  def getNextHashTargetGhost(
+      chainIndex: ChainIndex,
+      deps: BlockDeps
+  ): IOResult[Target] = IOUtils.tryExecute {
+    val parentHeader              = getBlockHeaderUnsafe(deps.uncleHash(chainIndex.to))
+    val (target, timeSpanAverage) = prepareCalNextHashTargetUnsafe(chainIndex, deps)
+    ChainDifficultyAdjustment.calNextHashTargetRaw(target, timeSpanAverage, parentHeader.hasUncle)
   }
 
   @SuppressWarnings(Array("org.wartremover.warts.Recursion"))

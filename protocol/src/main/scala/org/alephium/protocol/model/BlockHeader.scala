@@ -46,6 +46,8 @@ final case class BlockHeader(
 
   def isGenesis: Boolean = timestamp == ALPH.GenesisTimestamp
 
+  def hasUncle: Boolean = uncleHash != BlockHeader.EmptyUncleHash
+
   def parentHash: BlockHash = {
     assume(!isGenesis)
     blockDeps.uncleHash(chainIndex.to)

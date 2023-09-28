@@ -206,15 +206,19 @@ class HeaderValidationSpec extends AlephiumFlowSpec with NoIndexModelGeneratorsL
     override def ghostHardForkTimestamp = TimeStamp.Max
 
     header.uncleHash is BlockHeader.EmptyUncleHash
+    header.hasUncle is false
     passValidation(header)
     val modified = updateNonce(header.copy(uncleHash = Hash.random))
+    modified.hasUncle is true
     failValidation(modified, InvalidUncleHashBeforeGhostHardFork)
   }
 
   it should "check uncle hash after ghost hardfork" in new HeaderFixture {
     val modified0 = updateNonce(header.copy(uncleHash = BlockHeader.EmptyUncleHash))
+    modified0.hasUncle is false
     passValidation(modified0)
     val modified1 = updateNonce(header.copy(uncleHash = Hash.random))
+    modified1.hasUncle is true
     passValidation(modified1)
   }
 

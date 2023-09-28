@@ -18,9 +18,9 @@ package org.alephium.flow.core
 
 import org.alephium.flow.FlowFixture
 import org.alephium.protocol.ALPH
-import org.alephium.protocol.model.{ChainIndex, NetworkId, Target}
+import org.alephium.protocol.model.{Block, ChainIndex, NetworkId, Target}
 import org.alephium.protocol.vm.LockupScript
-import org.alephium.util.{AlephiumSpec, TimeStamp}
+import org.alephium.util.{AlephiumSpec, AVector, Bytes, TimeStamp}
 
 class FlowDifficultyAdjustmentSpec extends AlephiumSpec {
 
@@ -227,7 +227,8 @@ class FlowDifficultyAdjustmentSpec extends AlephiumSpec {
       val expectedDiff = consensusConfig.minMiningDiff.times(100 + 5 * k).divide(100)
       val expectedTarget = ChainDifficultyAdjustment.calNextHashTargetRaw(
         expectedDiff.getTarget(),
-        consensusConfig.blockTargetTime.timesUnsafe(consensusConfig.powAveragingWindow.toLong)
+        consensusConfig.blockTargetTime.timesUnsafe(consensusConfig.powAveragingWindow.toLong),
+        hasUncle = false
       )
       val block = emptyBlock(blockFlow, chainIndex)
       block.target is expectedTarget
@@ -239,7 +240,8 @@ class FlowDifficultyAdjustmentSpec extends AlephiumSpec {
 
   trait PreLemanDifficultyFixture extends FlowFixture {
     override val configValues = Map(
-      ("alephium.network.leman-hard-fork-timestamp ", TimeStamp.now().plusHoursUnsafe(1).millis)
+      ("alephium.network.leman-hard-fork-timestamp ", TimeStamp.now().plusHoursUnsafe(1).millis),
+      ("alephium.network.ghost-hard-fork-timestamp ", Long.MaxValue)
     )
     config.network.getHardFork(TimeStamp.now()).isLemanEnabled() is false
 
@@ -266,8 +268,66 @@ class FlowDifficultyAdjustmentSpec extends AlephiumSpec {
     }
   }
 
-  trait LemanDifficultyFixture extends FlowFixture {
+  it should "consider uncles for ghost hardfork" in new FlowFixture {
     override val configValues = Map(("alephium.broker.broker-num", 1))
+    networkConfig.getHardFork(TimeStamp.now()).isGhostEnabled() is true
+    val blockTime = consensusConfig.blockTargetTime.divUnsafe(2)
+
+    def mineBlock(timestamp: TimeStamp, chainIndex: ChainIndex): Block = {
+      mineWithoutCoinbase(blockFlow, chainIndex, AVector.empty, timestamp)
+    }
+
+    def mineBlocks(timestamp: TimeStamp, chainIndex: ChainIndex): (Block, Block) = {
+      val block0 = mineBlock(timestamp, chainIndex)
+      val block1 = mineBlock(timestamp, chainIndex)
+      if (Bytes.byteStringOrdering.compare(block0.hash.bytes, block1.hash.bytes) > 0) {
+        (block0, block1)
+      } else {
+        (block1, block0)
+      }
+    }
+
+    val blockFlow1 = isolatedBlockFlow()
+    var blockTs    = TimeStamp.now().minusUnsafe(blockTime.timesUnsafe(30))
+    (0 to consensusConfig.powAveragingWindow).foreach { _ =>
+      val blocks = brokerConfig.cliqueChainIndexes.map(mineBlock(blockTs, _))
+      blocks.foreach { block =>
+        addAndCheck(blockFlow, block)
+        addAndCheck(blockFlow1, block)
+      }
+      blockTs = blockTs.plusUnsafe(blockTime)
+    }
+
+    blockTs = blockTs.plusUnsafe(blockTime)
+    brokerConfig.cliqueChainIndexes.foreach { chainIndex =>
+      val (block, uncleBlock) = mineBlocks(blockTs, chainIndex)
+      addAndCheck(blockFlow, block)
+      addAndCheck(blockFlow1, block, uncleBlock)
+    }
+
+    blockTs = blockTs.plusUnsafe(blockTime)
+    brokerConfig.cliqueChainIndexes.foreach { chainIndex =>
+      val block0 = mineBlockTemplate(blockFlow, chainIndex)
+      block0.uncles.isEmpty is true
+      addAndCheck(blockFlow, block0)
+      val block1 = mineBlockTemplate(blockFlow1, chainIndex)
+      block1.uncles.nonEmpty is true
+      addAndCheck(blockFlow1, block1)
+      block0.target is block1.target
+    }
+
+    val chainIndex     = ChainIndex.unsafe(0, 0)
+    val miner          = getGenesisLockupScript(chainIndex.to)
+    val blockTemplate0 = blockFlow.prepareBlockFlowUnsafe(chainIndex, miner)
+    val blockTemplate1 = blockFlow1.prepareBlockFlowUnsafe(chainIndex, miner)
+    blockTemplate1.target < blockTemplate0.target is true
+  }
+
+  trait LemanDifficultyFixture extends FlowFixture {
+    override val configValues = Map(
+      ("alephium.broker.broker-num", 1),
+      ("alephium.network.ghost-hard-fork-timestamp ", Long.MaxValue)
+    )
 
     config.network.getHardFork(TimeStamp.now()).isLemanEnabled() is true
 

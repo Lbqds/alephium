@@ -191,8 +191,14 @@ trait BlockHeaderChain extends BlockHeaderPool with BlockHashChain with LazyLogg
 
   def getNextHashTargetRaw(hash: BlockHash, nextTimeStamp: TimeStamp): IOResult[Target] = {
     for {
-      header    <- getBlockHeader(hash)
-      newTarget <- calNextHashTargetRaw(hash, header.target, header.timestamp, nextTimeStamp)
+      header <- getBlockHeader(hash)
+      newTarget <- calNextHashTargetRaw(
+        hash,
+        header.target,
+        header.timestamp,
+        nextTimeStamp,
+        header.hasUncle
+      )
     } yield newTarget
   }
 

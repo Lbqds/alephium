@@ -109,7 +109,8 @@ trait ChainDifficultyAdjustment {
       hash: BlockHash,
       currentTarget: Target,
       currentTimeStamp: TimeStamp,
-      nextTimeStamp: TimeStamp
+      nextTimeStamp: TimeStamp,
+      hasUncle: Boolean
   ): IOResult[Target] = {
     getHeight(hash).flatMap {
       case height if ChainDifficultyAdjustment.enoughHeight(height) =>
@@ -117,7 +118,8 @@ trait ChainDifficultyAdjustment {
           case Some(timeSpan) =>
             val target = ChainDifficultyAdjustment.calNextHashTargetRaw(
               currentTarget,
-              timeSpan
+              timeSpan,
+              hasUncle
             )
             Right(calIceAgeTarget(target, currentTimeStamp, nextTimeStamp))
           case None =>
@@ -140,10 +142,12 @@ object ChainDifficultyAdjustment {
 
   def calNextHashTargetRaw(
       currentTarget: Target,
-      lastWindowTimeSpan: Duration
+      lastWindowTimeSpan: Duration,
+      hasUncle: Boolean
   )(implicit consensusConfig: ConsensusSetting): Target = {
+    val factor = if (hasUncle) 2 else 1
     var clippedTimeSpan =
-      consensusConfig.expectedWindowTimeSpan.millis + (lastWindowTimeSpan.millis - consensusConfig.expectedWindowTimeSpan.millis) / 4
+      consensusConfig.expectedWindowTimeSpan.millis + ((lastWindowTimeSpan.millis - consensusConfig.expectedWindowTimeSpan.millis) / 4) * factor
     if (clippedTimeSpan < consensusConfig.windowTimeSpanMin.millis) {
       clippedTimeSpan = consensusConfig.windowTimeSpanMin.millis
     } else if (clippedTimeSpan > consensusConfig.windowTimeSpanMax.millis) {
