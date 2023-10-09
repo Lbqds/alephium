@@ -30,8 +30,9 @@ class ContextSpec
     with TxGenerators
     with GroupConfigFixture.Default {
   trait Fixture extends NetworkConfigFixture.Default {
-    lazy val initialGas = 1000000
-    lazy val context    = genStatefulContext(None, gasLimit = initialGas)
+    lazy val initialGas                            = 1000000
+    lazy val context                               = genStatefulContext(None, gasLimit = initialGas)
+    override def ghostHardForkTimestamp: TimeStamp = TimeStamp.Max
 
     def createContract(): ContractId = {
       val output =
@@ -177,10 +178,11 @@ class ContextSpec
   }
 
   trait ContractOutputFixture extends NetworkConfigFixture.Default {
-    val contractId = ContractId.random
-    val tokenId0   = TokenId.random
-    val tokenId1   = TokenId.random
-    val outputRef  = contractOutputRefGen(GroupIndex.unsafe(0)).sample.get
+    override def ghostHardForkTimestamp: TimeStamp = TimeStamp.Max
+    val contractId                                 = ContractId.random
+    val tokenId0                                   = TokenId.random
+    val tokenId1                                   = TokenId.random
+    val outputRef = contractOutputRefGen(GroupIndex.unsafe(0)).sample.get
     val output =
       ContractOutput(100, LockupScript.p2c(contractId), AVector(tokenId0 -> 200, tokenId1 -> 300))
     val modifiedOutputs = Seq(

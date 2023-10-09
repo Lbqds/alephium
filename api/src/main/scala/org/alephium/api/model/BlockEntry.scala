@@ -38,15 +38,18 @@ final case class BlockEntry(
     txsHash: Hash,
     target: ByteString
 ) {
-  def toProtocol()(implicit networkConfig: NetworkConfig): Either[String, Block] = {
+  def toProtocol(
+      uncles: AVector[BlockHeader]
+  )(implicit networkConfig: NetworkConfig): Either[String, Block] = {
     for {
+      _            <- Either.cond(Block.calUncleHash(uncles) == uncleHash, (), "Invalid uncle hash")
       header       <- toBlockHeader()
       _            <- Either.cond(hash == header.hash, (), "Invalid hash")
       transactions <- transactions.mapE(_.toProtocol())
     } yield {
       Block(
         header,
-        AVector.empty,
+        uncles,
         transactions
       )
     }
