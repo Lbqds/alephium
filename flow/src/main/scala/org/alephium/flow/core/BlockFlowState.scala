@@ -323,6 +323,16 @@ trait BlockFlowState extends FlowTipsUtil {
     } yield BlockFlowGroupView.onlyBlocks(worldState, blockCaches)
   }
 
+  def getMutableGroupViewOnlyForValidation(
+      mainGroup: GroupIndex,
+      blockDeps: BlockDeps
+  ): IOResult[BlockFlowGroupView[WorldState.Cached]] = {
+    for {
+      worldState  <- getCachedWorldState(blockDeps, mainGroup)
+      blockCaches <- getBlockCachesForUpdates(mainGroup, blockDeps)
+    } yield BlockFlowGroupView.outputCacheOnlyForValidation(worldState, blockCaches, mainGroup)
+  }
+
   def getMutableGroupView(
       mainGroup: GroupIndex,
       blockDeps: BlockDeps,

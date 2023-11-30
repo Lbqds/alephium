@@ -24,7 +24,7 @@ import org.scalacheck.Gen
 import org.alephium.flow.FlowFixture
 import org.alephium.flow.mempool.{Normal, Reorg}
 import org.alephium.flow.validation.BlockValidation
-import org.alephium.protocol.{ALPH, SignatureSchema}
+import org.alephium.protocol.{ALPH, PrivateKey, PublicKey, SignatureSchema}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript, StatefulScript}
 import org.alephium.util._
@@ -183,7 +183,7 @@ class FlowUtilsSpec extends AlephiumSpec {
 
     blockFlow.getGrandPool().add(index, AVector(tx0.toTemplate, tx1.toTemplate), TimeStamp.now())
     val miner = getGenesisLockupScript(index)
-    blockFlow.prepareBlockFlowUnsafe(index, miner).transactions.init is AVector(tx0)
+    blockFlow.prepareBlockFlowUnsafe(index, miner).transactions.init is AVector(tx0, tx1)
   }
 
   it should "include failed contract tx in block assembly" in new FlowFixture {
@@ -346,5 +346,176 @@ class FlowUtilsSpec extends AlephiumSpec {
   it should "calculate difficulty" in new FlowFixture {
     blockFlow.getDifficultyMetric().rightValue is
       blockFlow.genesisBlocks.head.head.target.getDifficulty()
+  }
+
+  trait SequentialTxsFixture extends FlowFixture {
+    override val configValues = Map(("alephium.broker.broker-num", 1))
+
+    val chainIndex = ChainIndex.unsafe(0, 1)
+    val keys = (0 until 2).map { _ =>
+      val (privateKey, publicKey) = chainIndex.from.generateKey
+      val block                   = transfer(blockFlow, genesisKeys(0)._1, publicKey, ALPH.alph(20))
+      addAndCheck(blockFlow, block)
+      (privateKey, publicKey)
+    }
+    val (fromPrivateKey0, fromPublicKey0) = keys(0)
+    val (fromPrivateKey1, fromPublicKey1) = keys(1)
+
+    def transferTx(
+        from: PrivateKey,
+        to: PublicKey,
+        amount: U256,
+        gasPrice: GasPrice = nonCoinbaseMinGasPrice
+    ): TransactionTemplate = transferToMultiAddressTx(from, AVector(to), amount, gasPrice)
+
+    def transferToMultiAddressTx(
+        from: PrivateKey,
+        to: AVector[PublicKey],
+        amount: U256,
+        gasPrice: GasPrice = nonCoinbaseMinGasPrice
+    ): TransactionTemplate = {
+      val outputs = to.map(pk =>
+        UnsignedTransaction.TxOutputInfo(LockupScript.p2pkh(pk), amount, AVector.empty, None)
+      )
+      val unsignedTx = blockFlow
+        .transfer(
+          from.publicKey,
+          outputs,
+          None,
+          gasPrice,
+          defaultUtxoLimit
+        )
+        .rightValue
+        .rightValue
+      val tx = Transaction.from(unsignedTx, from).toTemplate
+      blockFlow.grandPool.add(chainIndex, tx, TimeStamp.now())
+      tx
+    }
+  }
+
+  it should "collect sequential tx if the input is from parent tx" in new SequentialTxsFixture {
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0               = transferTx(fromPrivateKey0, toPublicKey0, ALPH.alph(5))
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx1               = transferTx(fromPrivateKey0, toPublicKey1, ALPH.alph(5))
+
+    val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
+    blockFlow.collectPooledTxs(chainIndex, groupView, 1) is AVector(tx0)
+    blockFlow.collectPooledTxs(chainIndex, groupView, 2) is AVector(tx0, tx1)
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate) is AVector(tx0, tx1)
+    addAndCheck(blockFlow, block)
+  }
+
+  it should "collect sequential tx if inputs are from parent tx and persisted world state" in new SequentialTxsFixture {
+    val block0 = transfer(blockFlow, fromPrivateKey0, fromPublicKey0, ALPH.alph(10))
+    addAndCheck(blockFlow, block0)
+
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0               = transferTx(fromPrivateKey0, toPublicKey0, ALPH.alph(5))
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx1               = transferTx(fromPrivateKey0, toPublicKey1, ALPH.alph(11))
+
+    val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
+    blockFlow.collectPooledTxs(chainIndex, groupView, 1) is AVector(tx0)
+    blockFlow.collectPooledTxs(chainIndex, groupView, 2) is AVector(tx0, tx1)
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate) is AVector(tx0, tx1)
+    addAndCheck(blockFlow, block)
+  }
+
+  it should "collect sequential txs based on dependency" in new SequentialTxsFixture {
+    val gasPrice          = GasPrice(nonCoinbaseMinGasPrice.value.addOneUnsafe())
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx1 =
+      transferToMultiAddressTx(fromPrivateKey0, AVector(toPublicKey0, fromPublicKey0), ALPH.alph(5))
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx2               = transferTx(fromPrivateKey0, toPublicKey1, ALPH.alph(6))
+    val (_, toPublicKey2) = chainIndex.to.generateKey
+    val tx3               = transferTx(fromPrivateKey0, toPublicKey2, ALPH.alph(6), gasPrice)
+
+    val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
+    blockFlow.collectPooledTxs(chainIndex, groupView, 1) is AVector(tx1)
+    blockFlow.collectPooledTxs(chainIndex, groupView, 2) is AVector(tx1, tx2)
+    blockFlow.collectPooledTxs(chainIndex, groupView, 3) is AVector(tx1, tx2, tx3)
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate) is AVector(tx1, tx2, tx3)
+    addAndCheck(blockFlow, block)
+  }
+
+  it should "collect sequential txs based on gas price" in new SequentialTxsFixture {
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0               = transferTx(fromPrivateKey0, toPublicKey0, ALPH.alph(5))
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx1               = transferTx(fromPrivateKey0, toPublicKey1, ALPH.alph(5))
+
+    val gasPrice0         = GasPrice(nonCoinbaseMinGasPrice.value.addOneUnsafe())
+    val gasPrice1         = GasPrice(gasPrice0.value.addOneUnsafe())
+    val (_, toPublicKey2) = chainIndex.to.generateKey
+    val tx2               = transferTx(fromPrivateKey1, toPublicKey2, ALPH.alph(5), gasPrice0)
+    val (_, toPublicKey3) = chainIndex.to.generateKey
+    val tx3               = transferTx(fromPrivateKey1, toPublicKey3, ALPH.alph(5), gasPrice1)
+
+    val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
+    blockFlow.collectPooledTxs(chainIndex, groupView, 2) is AVector(tx2, tx3)
+    blockFlow.collectPooledTxs(chainIndex, groupView, 4) is AVector(tx2, tx3, tx0, tx1)
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate) is AVector(tx2, tx3, tx0, tx1)
+    addAndCheck(blockFlow, block)
+  }
+
+  it should "collect all sequential txs" in new SequentialTxsFixture {
+    val txs = AVector.from((0 until 15).map { _ =>
+      val (_, toPublicKey) = chainIndex.to.generateKey
+      transferTx(fromPrivateKey0, toPublicKey, ALPH.alph(1))
+    })
+    val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
+    blockFlow.collectPooledTxs(chainIndex, groupView, Int.MaxValue) is txs
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    addAndCheck(blockFlow, block)
+    block.nonCoinbase.map(_.toTemplate) is txs
+  }
+
+  it should "collect random transfer txs" in new FlowFixture {
+    override val configValues = Map(("alephium.broker.broker-num", 1))
+
+    val chainIndex = ChainIndex.unsafe(0, 0)
+    val keys = (0 until 4).map { _ =>
+      val (privateKey, publicKey) = chainIndex.from.generateKey
+      (0 until 10).foreach { _ =>
+        val block = transfer(blockFlow, genesisKeys(0)._1, publicKey, ALPH.alph(5))
+        addAndCheck(blockFlow, block)
+      }
+      (privateKey, publicKey)
+    }
+
+    @scala.annotation.tailrec
+    def randomTransferTx: TransactionTemplate = {
+      val fromIndex        = Random.nextInt(keys.length)
+      val toIndex          = (fromIndex + 1) % keys.length
+      val (fromKey, toKey) = (keys(fromIndex), keys(toIndex))
+      val balance          = getAlphBalance(blockFlow, LockupScript.p2pkh(fromKey._2))
+      if (balance < ALPH.oneAlph) {
+        randomTransferTx
+      } else {
+        val transferAmount = balance.divUnsafe(U256.Two)
+        transfer(blockFlow, fromKey._1, toKey._2, transferAmount).nonCoinbase.head.toTemplate
+      }
+    }
+
+    val txs = (0 until 40).map { _ =>
+      val tx = randomTransferTx
+      blockFlow.grandPool.add(chainIndex, tx, TimeStamp.now())
+      tx
+    }
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    addAndCheck(blockFlow, block)
+    block.nonCoinbase.map(_.toTemplate).toSet is txs.toSet
   }
 }

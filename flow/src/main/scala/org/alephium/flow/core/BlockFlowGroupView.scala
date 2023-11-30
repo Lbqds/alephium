@@ -16,10 +16,13 @@
 
 package org.alephium.flow.core
 
+import scala.collection.mutable
+
 import org.alephium.flow.core.BlockFlowState.BlockCache
 import org.alephium.flow.core.FlowUtils.{AssetOutputInfo, PersistedOutput, UnpersistedBlockOutput}
 import org.alephium.flow.mempool.MemPool
 import org.alephium.io.IOResult
+import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.{LockupScript, WorldState}
 import org.alephium.util.AVector
@@ -28,6 +31,8 @@ trait BlockFlowGroupView[WS <: WorldState[_, _, _, _]] {
   def worldState: WS
 
   def getPreOutput(outputRef: TxOutputRef): IOResult[Option[TxOutput]]
+
+  def onTxValidated[T <: TransactionAbstract](tx: T)(implicit groupConfig: GroupConfig): Unit = {}
 
   @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
   def getAsset(outputRef: TxOutputRef): IOResult[Option[AssetOutput]] = {
@@ -107,6 +112,14 @@ object BlockFlowGroupView {
       mempool: MemPool
   ): BlockFlowGroupView[WS] = {
     new Impl1[WS](worldState, blockCaches, mempool)
+  }
+
+  def outputCacheOnlyForValidation[WS <: WorldState[_, _, _, _]](
+      worldState: WS,
+      blockCaches: AVector[BlockCache],
+      groupIndex: GroupIndex
+  ): BlockFlowGroupView[WS] = {
+    new OutputCacheOnlyForValidation[WS](worldState, blockCaches, groupIndex)
   }
 
   private class Impl0[WS <: WorldState[_, _, _, _]](
@@ -229,6 +242,41 @@ object BlockFlowGroupView {
     ): IOResult[AVector[AssetOutputInfo]] = {
       super.getRelevantUtxos(lockupScript, maxUtxosToRead).map { utxosInBlocks =>
         mempool.getRelevantUtxos(lockupScript, utxosInBlocks)
+      }
+    }
+  }
+
+  final private class OutputCacheOnlyForValidation[WS <: WorldState[_, _, _, _]](
+      worldState: WS,
+      blockCaches: AVector[BlockCache],
+      groupIndex: GroupIndex
+  ) extends Impl0[WS](worldState, blockCaches) {
+    private val spent   = mutable.Set.empty[TxOutputRef]
+    private val outputs = mutable.Map.empty[TxOutputRef, TxOutput]
+
+    override def getPreOutput(outputRef: TxOutputRef): IOResult[Option[TxOutput]] = {
+      if (spent.contains(outputRef)) {
+        Right(None)
+      } else {
+        outputs.get(outputRef) match {
+          case output @ Some(_) => Right(output)
+          case None             => super.getPreOutput(outputRef)
+        }
+      }
+    }
+
+    override def onTxValidated[T <: TransactionAbstract](
+        tx: T
+    )(implicit groupConfig: GroupConfig): Unit = {
+      tx.unsigned.inputs.foreach { input =>
+        spent.addOne(input.outputRef)
+        outputs.remove(input.outputRef)
+      }
+      tx.unsigned.fixedOutputs.foreachWithIndex { case (output, index) =>
+        if (output.toGroup == groupIndex) {
+          val ref = AssetOutputRef.from(output, TxOutputRef.key(tx.id, index))
+          outputs.addOne(ref -> output)
+        }
       }
     }
   }

@@ -140,15 +140,19 @@ trait FlowUtils
 
   def calBestDepsUnsafe(group: GroupIndex): BlockDeps
 
-  def collectPooledTxs(
+  @inline def collectPooledTxs(
       chainIndex: ChainIndex,
       groupView: BlockFlowGroupView[WorldState.Cached]
   ): AVector[TransactionTemplate] = {
-    getMemPool(chainIndex).collectForBlock(
-      chainIndex,
-      mempoolSetting.txMaxNumberPerBlock,
-      groupView.containAsset
-    )
+    collectPooledTxs(chainIndex, groupView, mempoolSetting.txMaxNumberPerBlock)
+  }
+
+  def collectPooledTxs(
+      chainIndex: ChainIndex,
+      groupView: BlockFlowGroupView[WorldState.Cached],
+      txMaxNum: Int
+  ): AVector[TransactionTemplate] = {
+    getMemPool(chainIndex).collectForBlock(chainIndex, txMaxNum, groupView.containAsset)
   }
 
   private def filterValidTxs(
@@ -197,20 +201,24 @@ trait FlowUtils
   ): IOResult[AVector[Transaction]] = {
     if (chainIndex.isIntraGroup) {
       val parentHash = deps.getOutDep(chainIndex.to)
-      val order = Block.getScriptExecutionOrder(parentHash, txTemplates, blockEnv.getHardFork())
+      val order = AVector.from(
+        Block.getNonCoinbaseExecutionOrder(parentHash, txTemplates, blockEnv.getHardFork())
+      )
       val fullTxs =
         Array.ofDim[Transaction](txTemplates.length + 1) // reserve 1 slot for coinbase tx
-      txTemplates.foreachWithIndex { case (tx, index) =>
-        if (tx.unsigned.scriptOpt.isEmpty) {
-          fullTxs(index) = FlowUtils.convertNonScriptTx(tx)
-        }
-      }
-
       order
-        .foreachE[IOError] { scriptTxIndex =>
-          val tx = txTemplates(scriptTxIndex)
-          generateFullTx(chainIndex, groupView, blockEnv, tx, tx.unsigned.scriptOpt.get)
-            .map(fullTx => fullTxs(scriptTxIndex) = fullTx)
+        .foreachE[IOError] { index =>
+          val tx = txTemplates(index)
+          tx.unsigned.scriptOpt match {
+            case None =>
+              fullTxs(index) = FlowUtils.convertNonScriptTx(tx)
+              Right(groupView.onTxValidated(tx))
+            case Some(script) =>
+              generateFullTx(chainIndex, groupView, blockEnv, tx, script).map(fullTx => {
+                fullTxs(index) = fullTx
+                groupView.onTxValidated(fullTx)
+              })
+          }
         }
         .map { _ =>
           AVector.unsafe(fullTxs, 0, txTemplates.length)
@@ -233,15 +241,7 @@ trait FlowUtils
       target       <- getNextHashTarget(chainIndex, loosenDeps, templateTs)
       groupView    <- getMutableGroupView(chainIndex.from, loosenDeps)
       txCandidates <- collectTransactions(chainIndex, groupView, bestDeps)
-      template <- prepareBlockFlow(
-        chainIndex,
-        loosenDeps,
-        groupView,
-        txCandidates,
-        target,
-        templateTs,
-        miner
-      )
+      template  <- prepareBlockFlow(chainIndex, loosenDeps, txCandidates, target, templateTs, miner)
       validated <- validateTemplate(chainIndex, template)
     } yield {
       if (validated) {
@@ -258,7 +258,6 @@ trait FlowUtils
   private def prepareBlockFlow(
       chainIndex: ChainIndex,
       loosenDeps: BlockDeps,
-      groupView: BlockFlowGroupView[WorldState.Cached],
       candidates: AVector[TransactionTemplate],
       target: Target,
       templateTs: TimeStamp,
@@ -266,6 +265,7 @@ trait FlowUtils
   ): IOResult[BlockFlowTemplate] = {
     val blockEnv = BlockEnv(chainIndex, networkConfig.networkId, templateTs, target, None)
     for {
+      groupView    <- getMutableGroupViewOnlyForValidation(chainIndex.from, loosenDeps)
       fullTxs      <- executeTxTemplates(chainIndex, blockEnv, loosenDeps, groupView, candidates)
       depStateHash <- getDepStateHash(loosenDeps, chainIndex.from)
     } yield {

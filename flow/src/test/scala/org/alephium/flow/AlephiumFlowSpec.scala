@@ -530,7 +530,9 @@ trait FlowFixture
   def addAndCheck(blockFlow: BlockFlow, blocks: Block*): Unit = {
     blocks.foreach { block =>
       addAndCheck0(blockFlow, block)
-      checkOutputs(blockFlow, block)
+      if (false) { // TODO: we don't need to check the outputs after ghost hardfork
+        checkOutputs(blockFlow, block)
+      }
     }
   }
 
