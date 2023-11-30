@@ -66,8 +66,50 @@ class MemPool private (
     _contains(txId) && flow.unsafe(txId).isSource()
   }
 
-  def collectForBlock(index: ChainIndex, maxNum: Int): AVector[TransactionTemplate] = readOnly {
-    flow.takeSourceNodes(index.flattenIndex, maxNum, _.tx)
+  def collectForBlock(
+      index: ChainIndex,
+      maxNum: Int,
+      isOutputExist: AssetOutputRef => Boolean
+  ): AVector[TransactionTemplate] = {
+    @scala.annotation.tailrec
+    def iter(
+        txNum: Int,
+        txs: mutable.Set[TransactionTemplate],
+        outputRefSet: mutable.Set[AssetOutputRef],
+        acc: AVector[TransactionTemplate]
+    ): AVector[TransactionTemplate] = {
+      val selected = txs.find(_.unsigned.inputs.forall { input =>
+        outputRefSet.contains(input.outputRef) || isOutputExist(input.outputRef)
+      })
+      selected match {
+        case Some(tx) =>
+          val newAcc = acc :+ tx
+          if (txNum == 1) {
+            newAcc
+          } else {
+            iter(
+              txNum - 1,
+              txs.subtractOne(tx),
+              outputRefSet.addAll(tx.assetOutputRefs),
+              newAcc
+            )
+          }
+        case None => acc
+      }
+    }
+
+    val flattenIndex = index.flattenIndex
+    val allTxs       = mutable.Set.empty[TransactionTemplate]
+    readOnly {
+      val sourceNodes = AVector.from(flow.sourceTxs(flattenIndex).values())
+      sourceNodes.foreach(_.collectChildren(flattenIndex, allTxs.addAll(sourceNodes.map(_.tx))))
+    }
+    iter(
+      maxNum,
+      mutable.SortedSet.from(allTxs)(MemPool.txOrdering),
+      mutable.Set.empty[AssetOutputRef],
+      AVector.empty
+    )
   }
 
   def getAll(): AVector[TransactionTemplate] = readOnly {
@@ -360,6 +402,20 @@ object MemPool {
       var _children: Option[mutable.ArrayBuffer[FlowNode]]
   ) extends KeyedFlow.Node[TransactionId, FlowNode] {
     def getGroup(): Int = chainIndex
+
+    @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
+    def collectChildren(flattenChainIndex: Int, buffer: mutable.Set[TransactionTemplate]): Unit = {
+      getChildren() match {
+        case Some(children) =>
+          children.foreach { node =>
+            if (node.chainIndex == flattenChainIndex && !buffer.contains(node.tx)) {
+              buffer.addOne(node.tx)
+              node.collectChildren(flattenChainIndex, buffer)
+            }
+          }
+        case None => ()
+      }
+    }
   }
 
   final case class Flow(

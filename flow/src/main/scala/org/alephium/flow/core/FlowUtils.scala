@@ -17,6 +17,7 @@
 package org.alephium.flow.core
 
 import scala.annotation.tailrec
+import scala.collection.mutable
 import scala.reflect.ClassTag
 
 import com.typesafe.scalalogging.LazyLogging
@@ -139,17 +140,33 @@ trait FlowUtils
 
   def calBestDepsUnsafe(group: GroupIndex): BlockDeps
 
-  def collectPooledTxs(chainIndex: ChainIndex): AVector[TransactionTemplate] = {
-    getMemPool(chainIndex).collectForBlock(chainIndex, mempoolSetting.txMaxNumberPerBlock)
+  def collectPooledTxs(
+      chainIndex: ChainIndex,
+      groupView: BlockFlowGroupView[WorldState.Cached]
+  ): AVector[TransactionTemplate] = {
+    getMemPool(chainIndex).collectForBlock(
+      chainIndex,
+      mempoolSetting.txMaxNumberPerBlock,
+      groupView.containAsset
+    )
   }
 
-  def filterValidInputsUnsafe(
+  private def filterValidTxs(
       txs: AVector[TransactionTemplate],
       groupView: BlockFlowGroupView[WorldState.Cached]
   ): AVector[TransactionTemplate] = {
-    txs.filter { tx =>
-      Utils.unsafe(groupView.getPreOutputs(tx.unsigned.inputs)).nonEmpty
+    var result       = AVector.ofCapacity[TransactionTemplate](txs.length)
+    val outputRefSet = mutable.Set.empty[AssetOutputRef]
+    txs.foreach { tx =>
+      if (
+        tx.unsigned.inputs
+          .forall(i => outputRefSet.contains(i.outputRef) || groupView.containAsset(i.outputRef))
+      ) {
+        outputRefSet.addAll(tx.assetOutputRefs)
+        result = result :+ tx
+      }
     }
+    result
   }
 
   // TODO: truncate txs in advance for efficiency
@@ -159,12 +176,12 @@ trait FlowUtils
       bestDeps: BlockDeps
   ): IOResult[AVector[TransactionTemplate]] = {
     IOUtils.tryExecute {
-      val candidates0 = collectPooledTxs(chainIndex)
+      // some tx inputs might from bestDeps, but not loosenDeps, check inputs using groupView
+      val candidates0 = collectPooledTxs(chainIndex, groupView)
       val candidates1 = FlowUtils.filterDoubleSpending(candidates0)
-      // some tx inputs might from bestDeps, but not loosenDeps
-      val candidates2 = filterValidInputsUnsafe(candidates1, groupView)
       // we don't want any tx that conflicts with bestDeps
-      val candidates3 = filterConflicts(chainIndex.from, bestDeps, candidates2, getBlockUnsafe)
+      val candidates2 = filterConflicts(chainIndex.from, bestDeps, candidates1, getBlockUnsafe)
+      val candidates3 = filterValidTxs(candidates2, groupView)
       FlowUtils.truncateTxs(candidates3, maximalTxsInOneBlock, maximalGasPerBlock)
     }
   }

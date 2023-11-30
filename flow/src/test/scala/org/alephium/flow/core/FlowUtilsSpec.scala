@@ -304,13 +304,14 @@ class FlowUtilsSpec extends AlephiumSpec {
 
       val oldDeps = blockFlow.getBestDeps(chainIndex.from)
       addWithoutViewUpdate(blockFlow, block0)
-      val newDeps = blockFlow.calBestDepsUnsafe(chainIndex.from)
+      val newDeps   = blockFlow.calBestDepsUnsafe(chainIndex.from)
+      val groupView = blockFlow.getMutableGroupView(chainIndex.from, oldDeps).rightValue
       blockFlow.updateGrandPoolUnsafe(chainIndex.from, newDeps, oldDeps, heightGap)
-      mempool.collectForBlock(chainIndex, Int.MaxValue) is expected
+      blockFlow.collectPooledTxs(chainIndex, groupView) is expected
     }
 
-    test(0, AVector(tx0))
-    test(1, AVector(tx1))
+    test(0, AVector(tx0, tx1))
+    test(1, AVector.empty)
   }
 
   it should "assembly block when gas fees are different" in new FlowFixture {
