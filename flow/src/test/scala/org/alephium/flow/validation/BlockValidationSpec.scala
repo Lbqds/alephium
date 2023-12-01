@@ -485,4 +485,39 @@ class BlockValidationSpec extends AlephiumSpec {
     )
     validatorLeman.validate(block, blockflowLeman).isRight is true
   }
+
+  trait SequentialTxsFixture extends Fixture {
+    val (privateKey, _) = {
+      val (privateKey, publicKey) = chainIndex.from.generateKey
+      val genesisKey              = genesisKeys(chainIndex.from.value)._1
+      addAndCheck(blockFlow, transfer(blockFlow, genesisKey, publicKey, ALPH.alph(20)))
+      (privateKey, publicKey)
+    }
+
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0 = transfer(blockFlow, privateKey, toPublicKey0, ALPH.alph(5)).nonCoinbase.head
+    blockFlow.grandPool.add(chainIndex, tx0.toTemplate, TimeStamp.now())
+  }
+
+  it should "check double spending for sequential txs" in new SequentialTxsFixture {
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val (_, toPublicKey2) = chainIndex.to.generateKey
+    val tx1 = transfer(blockFlow, privateKey, toPublicKey1, ALPH.alph(5)).nonCoinbase.head
+    val tx2 = transfer(blockFlow, privateKey, toPublicKey2, ALPH.alph(5)).nonCoinbase.head
+    tx1.unsigned.inputs.length is 1
+    tx1.unsigned.inputs.head.outputRef is tx0.assetOutputRefs(1)
+    tx1.unsigned.inputs is tx2.unsigned.inputs
+
+    val block = mineWithTxs(blockFlow, chainIndex, AVector(tx0, tx1, tx2))
+    block.fail(BlockDoubleSpending)(checkBlockUnit(_, blockFlow))
+  }
+
+  it should "invalidate block if child tx is in front of parent tx" in new SequentialTxsFixture {
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx1 = transfer(blockFlow, privateKey, toPublicKey1, ALPH.alph(5)).nonCoinbase.head
+    tx1.unsigned.inputs.length is 1
+    tx1.unsigned.inputs.head.outputRef is tx0.assetOutputRefs(1)
+    val block = mineWithTxs(blockFlow, chainIndex, AVector(tx1, tx0))
+    checkBlock(block, blockFlow).leftValue isE ExistInvalidTx(tx1, NonExistInput)
+  }
 }
