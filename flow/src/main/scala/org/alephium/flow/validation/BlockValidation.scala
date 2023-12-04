@@ -186,8 +186,12 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
     if (brokerConfig.contains(chainIndex.from)) {
       val hardFork = networkConfig.getHardFork(block.timestamp)
       for {
-        groupView <- from(flow.getMutableGroupView(chainIndex.from, block.blockDeps))
-        _         <- checkNonCoinbases(chainIndex, block, groupView, hardFork)
+        groupView <- from(if (hardFork.isGhostEnabled()) {
+          flow.getMutableGroupViewOnlyForValidation(chainIndex.from, block.blockDeps)
+        } else {
+          flow.getMutableGroupView(chainIndex.from, block.blockDeps)
+        })
+        _ <- checkNonCoinbases(chainIndex, block, groupView, hardFork)
         _ <- checkCoinbase(
           chainIndex,
           block,
@@ -223,12 +227,17 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
   }
 
   private[validation] def checkGasPriceDecreasing(block: Block): BlockValidationResult[Unit] = {
-    val result = block.transactions.foldE[Unit, GasPrice](GasPrice(ALPH.MaxALPHValue)) {
-      case (lastGasPrice, tx) =>
-        val txGasPrice = tx.unsigned.gasPrice
-        if (txGasPrice > lastGasPrice) Left(()) else Right(txGasPrice)
+    val hardFork = networkConfig.getHardFork(block.timestamp)
+    if (hardFork.isGhostEnabled()) {
+      Right(())
+    } else {
+      val result = block.transactions.foldE[Unit, GasPrice](GasPrice(ALPH.MaxALPHValue)) {
+        case (lastGasPrice, tx) =>
+          val txGasPrice = tx.unsigned.gasPrice
+          if (txGasPrice > lastGasPrice) Left(()) else Right(txGasPrice)
+      }
+      if (result.isRight) validBlock(()) else invalidBlock(TxGasPriceNonDecreasing)
     }
-    if (result.isRight) validBlock(()) else invalidBlock(TxGasPriceNonDecreasing)
   }
 
   // Let's check the gas is decreasing as well
@@ -410,9 +419,12 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
         None
       )
       txValidationResult match {
-        case Right(_) => Right(())
+        case Right(_) =>
+          groupView.onTxValidated(tx)
+          Right(())
         case Left(Right(TxScriptExeFailed(_))) =>
           if (tx.contractInputs.isEmpty) {
+            groupView.onTxValidated(tx)
             Right(())
           } else {
             convert(tx, invalidTx(ContractInputsShouldBeEmptyForFailedTxScripts))

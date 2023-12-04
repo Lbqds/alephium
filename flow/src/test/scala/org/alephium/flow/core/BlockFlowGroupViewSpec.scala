@@ -17,6 +17,7 @@
 package org.alephium.flow.core
 
 import org.alephium.flow.FlowFixture
+import org.alephium.protocol.{ALPH, Generators}
 import org.alephium.protocol.model.{ChainIndex, GroupIndex}
 import org.alephium.util.{AlephiumSpec, TimeStamp}
 
@@ -67,5 +68,44 @@ class BlockFlowGroupViewSpec extends AlephiumSpec {
       block2.nonCoinbase.head.unsigned.fixedOutputs.tail
     groupView3.getRelevantUtxos(lockupScript, Int.MaxValue).rightValue.map(_.output) is
       block2.nonCoinbase.head.unsigned.fixedOutputs.tail
+  }
+
+  it should "test OutputCacheOnlyForValidation" in new FlowFixture with Generators {
+    override val configValues = Map(("alephium.broker.broker-num", 1))
+
+    val chainIndex = chainIndexGen.sample.get
+    val genesisKey = genesisKeys(chainIndex.from.value)._1
+    val privateKey = {
+      val (privateKey, publicKey) = chainIndex.from.generateKey
+      (0 until 4).foreach { _ =>
+        addAndCheck(blockFlow, transfer(blockFlow, genesisKey, publicKey, ALPH.alph(10)))
+      }
+      privateKey
+    }
+
+    val txs = (0 until 19).map { _ =>
+      val (_, toPublicKey) = chainIndex.to.generateKey
+      val tx =
+        transfer(blockFlow, privateKey, toPublicKey, ALPH.alph(2)).nonCoinbase.head.toTemplate
+      blockFlow.grandPool.add(chainIndex, tx, TimeStamp.now())
+      tx
+    }
+
+    val bestDeps = blockFlow.getBestDeps(chainIndex.from)
+    val groupView =
+      blockFlow.getMutableGroupViewOnlyForValidation(chainIndex.from, bestDeps).rightValue
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate).toSet is txs.toSet
+    block.nonCoinbase.foreach { tx =>
+      tx.unsigned.inputs.foreach(i => groupView.containAsset(i.outputRef) is true)
+      tx.assetOutputRefs.foreach(ref => groupView.containAsset(ref) is false)
+      groupView.onTxValidated(tx)
+      tx.unsigned.inputs.foreach(i => groupView.containAsset(i.outputRef) is false)
+      tx.assetOutputRefs.foreach { ref =>
+        groupView.containAsset(ref) is (ref.fromGroup == chainIndex.from)
+      }
+    }
+    addAndCheck(blockFlow, block)
   }
 }

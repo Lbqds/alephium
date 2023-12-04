@@ -368,6 +368,8 @@ class BlockValidationSpec extends AlephiumSpec {
   }
 
   it should "check the gas price decreasing" in new Fixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
     implicit val validator = checkGasPriceDecreasing _
 
     val block = transfer(blockFlow, chainIndex)

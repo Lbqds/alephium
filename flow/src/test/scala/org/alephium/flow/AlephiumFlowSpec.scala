@@ -581,7 +581,10 @@ trait FlowFixture
   def addAndCheck(blockFlow: BlockFlow, blocks: Block*): Unit = {
     blocks.foreach { block =>
       addAndCheck0(blockFlow, block)
-      checkOutputs(blockFlow, block)
+      val hardFork = networkConfig.getHardFork(block.timestamp)
+      if (!hardFork.isGhostEnabled()) {
+        checkOutputs(blockFlow, block)
+      }
     }
   }
 
