@@ -226,6 +226,16 @@ class VMSpec extends AlephiumSpec with Generators {
       (contractId, contractOutputRef)
     }
 
+    def buildCallContractTx(
+        input: String,
+        from: LockupScript.Asset,
+        chainIndex: ChainIndex = chainIndex
+    ): TransactionTemplate = {
+      val script = Compiler.compileTxScript(input).rightValue
+      script.toTemplateString() is Hex.toHexString(serialize(script))
+      payableCallTxTemplate(blockFlow, chainIndex, from, script, 200000, true)
+    }
+
     def callTxScript(input: String, chainIndex: ChainIndex = chainIndex): Block = {
       val script = Compiler.compileTxScript(input).rightValue
       script.toTemplateString() is Hex.toHexString(serialize(script))
@@ -4619,6 +4629,48 @@ class VMSpec extends AlephiumSpec with Generators {
     test(ALPH.oneAlph - 1)
     test(ALPH.oneAlph)
     test(ALPH.oneAlph + 1)
+  }
+
+  it should "use pre-output for script tx" in new ContractFixture {
+    val (privateKey, publicKey) = chainIndex.from.generateKey
+    val address                 = Address.Asset(LockupScript.p2pkh(publicKey))
+    keyManager.addOne(address.lockupScript -> privateKey)
+
+    val foo =
+      s"""
+         |Contract Foo() {
+         |  @using(preapprovedAssets = true, assetsInContract = true)
+         |  pub fn transfer(from: Address, amount: U256) -> () {
+         |    transferTokenToSelf!(from, ALPH, amount)
+         |  }
+         |}
+         |""".stripMargin
+    val fooId = createContract(foo)._1
+
+    val script =
+      s"""
+         |TxScript Main {
+         |  let foo = Foo(#${fooId.toHexString})
+         |  foo.transfer{@$address -> ALPH: 1 alph}(@$address, 1 alph)
+         |}
+         |$foo
+         |""".stripMargin
+
+    val genesisKey = genesisKeys(chainIndex.from.value)._1
+    val tx0 = transfer(blockFlow, genesisKey, publicKey, ALPH.alph(10)).nonCoinbase.head.toTemplate
+    blockFlow.grandPool.add(chainIndex, tx0, TimeStamp.now())
+
+    val tx1 = buildCallContractTx(script, address.lockupScript)
+    tx1.unsigned.inputs.length is 1
+    tx1.unsigned.inputs.head.outputRef is tx0.assetOutputRefs.head
+    blockFlow.grandPool.add(chainIndex, tx1, TimeStamp.now())
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate) is AVector(tx0, tx1)
+    addAndCheck(blockFlow, block)
+    val worldState    = blockFlow.getBestPersistedWorldState(chainIndex.from).rightValue
+    val contractAsset = worldState.getContractAsset(fooId).rightValue
+    contractAsset.amount is ALPH.alph(2)
   }
 
   "Mempool" should "remove invalid transaction" in new ContractFixture {
