@@ -27,10 +27,11 @@ import org.alephium.protocol.{ALPH, Hash, Signature, SignatureSchema}
 import org.alephium.protocol.config._
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm
-import org.alephium.protocol.vm.{GasBox, GasPrice, Method, StatefulScript}
+import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript, Method, StatefulScript}
 import org.alephium.serde.serialize
 import org.alephium.util.{AlephiumSpec, AVector, TimeStamp, U256}
 
+// scalastyle:off file.size.limit
 class BlockValidationSpec extends AlephiumSpec {
 
   trait Fixture extends BlockValidation with FlowFixture with NoIndexModelGeneratorsLike {
@@ -775,5 +776,61 @@ class BlockValidationSpec extends AlephiumSpec {
     val blockTemplate = blockFlow.prepareBlockFlowUnsafe(chainIndex, miner)
     blockTemplate.uncles.map(_.hash) is block21.hash +: hashesAtHeight1.tail
     addAndCheck(blockFlow, mine(blockFlow, blockTemplate))
+  }
+
+  it should "invalidate blocks with sequential txs for pre-ghost hardfork" in new Fixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
+    override lazy val chainIndex = ChainIndex.unsafe(0, 0)
+    networkConfig.getHardFork(TimeStamp.now()).isGhostEnabled() is false
+
+    val genesisKey              = genesisKeys(chainIndex.from.value)._1
+    val (privateKey, publicKey) = chainIndex.from.generateKey
+    val lockupScript            = LockupScript.p2pkh(publicKey)
+    keyManager.addOne(lockupScript -> privateKey)
+
+    val tx0 = transfer(blockFlow, genesisKey, publicKey, ALPH.alph(20)).nonCoinbase.head
+    blockFlow.grandPool.add(chainIndex, tx0.toTemplate, TimeStamp.now())
+
+    val tx1   = transferTx(blockFlow, chainIndex, lockupScript, ALPH.alph(10), None)
+    val block = mineWithTxs(blockFlow, chainIndex, AVector(tx0, tx1))
+    checkBlock(block, blockFlow).leftValue isE ExistInvalidTx(tx1, NonExistInput)
+  }
+
+  trait SequentialTxsFixture extends Fixture {
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Ghost
+
+    val (privateKey, _) = {
+      val (privateKey, publicKey) = chainIndex.from.generateKey
+      val genesisKey              = genesisKeys(chainIndex.from.value)._1
+      addAndCheck(blockFlow, transfer(blockFlow, genesisKey, publicKey, ALPH.alph(20)))
+      (privateKey, publicKey)
+    }
+
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0 = transfer(blockFlow, privateKey, toPublicKey0, ALPH.alph(5)).nonCoinbase.head
+    blockFlow.grandPool.add(chainIndex, tx0.toTemplate, TimeStamp.now())
+  }
+
+  it should "check double spending for sequential txs" in new SequentialTxsFixture {
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val (_, toPublicKey2) = chainIndex.to.generateKey
+    val tx1 = transfer(blockFlow, privateKey, toPublicKey1, ALPH.alph(5)).nonCoinbase.head
+    val tx2 = transfer(blockFlow, privateKey, toPublicKey2, ALPH.alph(5)).nonCoinbase.head
+    tx1.unsigned.inputs.length is 1
+    tx1.unsigned.inputs.head.outputRef is tx0.assetOutputRefs(1)
+    tx1.unsigned.inputs is tx2.unsigned.inputs
+
+    val block = mineWithTxs(blockFlow, chainIndex, AVector(tx0, tx1, tx2))
+    block.fail(BlockDoubleSpending)(checkBlockUnit(_, blockFlow))
+  }
+
+  it should "invalidate block if child tx is in front of parent tx" in new SequentialTxsFixture {
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx1 = transfer(blockFlow, privateKey, toPublicKey1, ALPH.alph(5)).nonCoinbase.head
+    tx1.unsigned.inputs.length is 1
+    tx1.unsigned.inputs.head.outputRef is tx0.assetOutputRefs(1)
+    val block = mineWithTxs(blockFlow, chainIndex, AVector(tx1, tx0))
+    checkBlock(block, blockFlow).leftValue isE ExistInvalidTx(tx1, NonExistInput)
   }
 }
