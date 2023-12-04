@@ -240,6 +240,9 @@ class FlowUtilsSpec extends AlephiumSpec {
   }
 
   it should "prepare block template when txs are inter-dependent" in new FlowFixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
+
     val blockFlow1 = isolatedBlockFlow()
     val index      = ChainIndex.unsafe(0, 0)
     val block0     = transfer(blockFlow1, index)
@@ -374,7 +377,7 @@ class FlowUtilsSpec extends AlephiumSpec {
       addWithoutViewUpdate(blockFlow, block0)
       val newDeps = blockFlow.calBestDepsUnsafe(chainIndex.from)
       blockFlow.updateGrandPoolUnsafe(chainIndex.from, newDeps, oldDeps, heightGap)
-      mempool.collectForBlock(chainIndex, Int.MaxValue) is expected
+      blockFlow.collectPooledTxsPreGhost(chainIndex) is expected
     }
 
     test(0, AVector(tx0))

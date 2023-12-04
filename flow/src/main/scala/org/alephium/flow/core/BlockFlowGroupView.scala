@@ -38,6 +38,10 @@ trait BlockFlowGroupView[WS <: WorldState[_, _, _, _]] {
     }
   }
 
+  def containAsset(outputRef: AssetOutputRef): Boolean = {
+    getAsset(outputRef).map(_.isDefined).contains(true)
+  }
+
   def getPreOutputs(inputs: AVector[TxInput]): IOResult[Option[AVector[AssetOutput]]] = {
     inputs.foldE(Option(AVector.ofCapacity[AssetOutput](inputs.length))) {
       case (Some(outputs), input) => getAsset(input.outputRef).map(_.map(outputs :+ _))

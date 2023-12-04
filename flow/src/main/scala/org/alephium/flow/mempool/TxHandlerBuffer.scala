@@ -31,7 +31,7 @@ class TxHandlerBuffer private (
   }
 
   def getRootTxs(): AVector[TransactionTemplate] = {
-    pool.collectForBlock(TxHandlerBuffer.bufferChainIndex, Int.MaxValue)
+    pool.flow.takeSourceNodes(TxHandlerBuffer.bufferChainFlattenIndex, Int.MaxValue, _.tx)
   }
 
   def removeInvalidTx(tx: TransactionTemplate): Unit = {
@@ -60,8 +60,9 @@ object TxHandlerBuffer {
   private val bufferGroupConfig = new GroupConfig {
     override def groups: Int = 1
   }
-  private val bufferChainIndex = ChainIndex.unsafe(0)(bufferGroupConfig)
-  private val bufferGroupIndex = GroupIndex.unsafe(0)(bufferGroupConfig)
+  private val bufferChainIndex        = ChainIndex.unsafe(0)(bufferGroupConfig)
+  private val bufferGroupIndex        = GroupIndex.unsafe(0)(bufferGroupConfig)
+  private val bufferChainFlattenIndex = bufferChainIndex.flattenIndex(bufferGroupConfig)
 
   // scalastyle:off magic.number
   def default(): TxHandlerBuffer = ofCapacity(500)

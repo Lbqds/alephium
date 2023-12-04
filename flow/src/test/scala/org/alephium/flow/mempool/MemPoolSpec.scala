@@ -18,10 +18,12 @@ package org.alephium.flow.mempool
 
 import scala.util.Random
 
+import org.scalacheck.Gen
+
 import org.alephium.flow.AlephiumFlowSpec
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.GasPrice
-import org.alephium.util.{AVector, LockFixture, TimeStamp, UnsecureRandom}
+import org.alephium.util.{AVector, LockFixture, TimeStamp, U256, UnsecureRandom}
 
 class MemPoolSpec
     extends AlephiumFlowSpec
@@ -241,7 +243,7 @@ class MemPoolSpec
     val timeStamp = TimeStamp.now()
     Random.shuffle(txs).foreach(tx => pool.add(index, tx, timeStamp))
 
-    pool.collectForBlock(index, Int.MaxValue) is AVector.from(
+    pool.collectForBlockPreGhost(index, Int.MaxValue) is AVector.from(
       txs.sortBy(_.unsigned.gasPrice.value).reverse
     )
   }
@@ -253,9 +255,245 @@ class MemPoolSpec
     val tx        = transactionGen().retryUntil(_.chainIndex == index).sample.get.toTemplate
     pool.addXGroupTx(index, tx, TimeStamp.now())
     pool.size is 1
-    pool.collectForBlock(ChainIndex(mainGroup, mainGroup), Int.MaxValue).isEmpty is true
+    pool.collectForBlockPreGhost(ChainIndex(mainGroup, mainGroup), Int.MaxValue).isEmpty is true
 
     pool.cleanInvalidTxs(blockFlow, TimeStamp.now().plusHoursUnsafe(1)) is 1
     pool.size is 0
+  }
+
+  trait SequentialTxsFixture {
+    val chainIndex = chainIndexGen.sample.get
+
+    implicit class RichTransactionTemplate(template: TransactionTemplate) {
+      def outputRefs = template.assetOutputRefs.filter(_.fromGroup == chainIndex.from)
+
+      def withGasPrice(gasPrice: GasPrice): TransactionTemplate = {
+        template.copy(unsigned = template.unsigned.copy(gasPrice = gasPrice))
+      }
+    }
+
+    implicit class RichGasPrice(gasPrice: GasPrice) {
+      def add(num: Int): GasPrice = GasPrice(gasPrice.value.addUnsafe(U256.unsafe(num)))
+    }
+
+    @scala.annotation.tailrec
+    final def genTx(
+        chainIndex: ChainIndex = chainIndex,
+        changeOutputSize: Int = 1
+    ): TransactionTemplate = {
+      val tx = transactionGen(chainIndexGen = Gen.const(chainIndex)).sample.get.toTemplate
+      if (tx.outputRefs.length < changeOutputSize) genTx() else tx
+    }
+
+    def childTxOf(parentTx: TransactionTemplate): TransactionTemplate = {
+      childTxOf(AVector(parentTx), chainIndex)
+    }
+
+    def childTxOfRefs(
+        outputRefs: AVector[AssetOutputRef],
+        chainIndex: ChainIndex = chainIndex
+    ): TransactionTemplate = {
+      val tx     = genTx(chainIndex)
+      val inputs = outputRefs.map(ref => TxInput(ref, p2pkhUnlockGen(chainIndex.from).sample.get))
+      tx.copy(unsigned = tx.unsigned.copy(inputs = inputs))
+    }
+
+    def childTxOf(
+        parentTxs: AVector[TransactionTemplate],
+        chainIndex: ChainIndex = chainIndex
+    ): TransactionTemplate = {
+      childTxOfRefs(parentTxs.map(_.outputRefs.head), chainIndex)
+    }
+
+    def createIsOutputRefExist(pool: MemPool): AssetOutputRef => Boolean = { ref =>
+      {
+        val allSourceNodes = pool.flow.sourceTxs.flatMap(m => AVector.from(m.values()))
+        allSourceNodes.exists(_.tx.unsigned.inputs.exists(_.outputRef == ref))
+      }
+    }
+  }
+
+  it should "collect sequential txs" in new SequentialTxsFixture {
+    {
+      info("tx has one source parent")
+      val pool     = MemPool.empty(chainIndex.from)
+      val parentTx = genTx()
+      pool.add(chainIndex, parentTx, TimeStamp.now())
+
+      val childTx = childTxOf(parentTx)
+      pool.add(chainIndex, childTx, TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, 0, _ => true) is AVector.empty[TransactionTemplate]
+      pool.collectForBlockGhost(chainIndex, 1, _ => false) is AVector.empty[TransactionTemplate]
+      pool.collectForBlockGhost(chainIndex, 1, isOutputRefExist) is AVector(parentTx)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist) is AVector(
+        parentTx,
+        childTx
+      )
+    }
+
+    {
+      info("tx has two source parents")
+      val pool                   = MemPool.empty(chainIndex.from)
+      val (parentTx0, parentTx1) = (genTx(), genTx())
+      pool.add(chainIndex, AVector(parentTx0, parentTx1), now)
+
+      val childTx = childTxOf(AVector(parentTx0, parentTx1))
+      pool.add(chainIndex, childTx, TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, 2, isOutputRefExist).toSet is Set(parentTx0, parentTx1)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist).toSet is Set(
+        parentTx0,
+        parentTx1,
+        childTx
+      )
+    }
+
+    {
+      info("the input of parent tx is not exist")
+      val pool     = MemPool.empty(chainIndex.from)
+      val parentTx = genTx()
+      pool.add(chainIndex, parentTx, now)
+
+      val childTx = childTxOf(parentTx)
+      pool.add(chainIndex, childTx, TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(
+        chainIndex,
+        Int.MaxValue,
+        isOutputRefExist
+      ) is AVector(parentTx, childTx)
+      pool.collectForBlockGhost(
+        chainIndex,
+        Int.MaxValue,
+        ref => isOutputRefExist(ref) && ref != parentTx.unsigned.inputs.head.outputRef
+      ) is AVector.empty[TransactionTemplate]
+    }
+
+    {
+      info("tx has one source parent and one non-source parent")
+      val pool                   = MemPool.empty(chainIndex.from)
+      val (parentTx0, parentTx1) = (genTx(), genTx())
+      pool.add(chainIndex, AVector(parentTx0, parentTx1), now)
+
+      val tx0 = childTxOf(parentTx0)
+      val tx1 = childTxOf(AVector(parentTx1, tx0))
+      pool.add(chainIndex, AVector(tx1, tx0), TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, 3, isOutputRefExist).toSet is Set(
+        parentTx0,
+        parentTx1,
+        tx0
+      )
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist).toSet is Set(
+        parentTx0,
+        parentTx1,
+        tx0,
+        tx1
+      )
+    }
+
+    {
+      info("chain index of tx is different from parent")
+      val pool = MemPool.empty(chainIndex.from)
+      val chainIndex1 =
+        chainIndexGen.retryUntil(c => c.from == chainIndex.from && c.to != chainIndex.to).sample.get
+      chainIndex1.from is chainIndex.from
+
+      val parentTx = genTx()
+      pool.add(chainIndex, parentTx, TimeStamp.now())
+
+      val childTx = childTxOf(AVector(parentTx), chainIndex1)
+      pool.add(chainIndex1, childTx, TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist) is AVector(parentTx)
+      pool.collectForBlockGhost(chainIndex1, Int.MaxValue, isOutputRefExist) is AVector
+        .empty[TransactionTemplate]
+    }
+
+    {
+      info("parent tx is not from the same chain")
+      val pool = MemPool.empty(chainIndex.from)
+      val chainIndex1 =
+        chainIndexGen.retryUntil(c => c.from == chainIndex.from && c.to != chainIndex.to).sample.get
+      chainIndex1.from is chainIndex.from
+
+      val (parentTx0, parentTx1) = (genTx(), genTx(chainIndex1))
+      val now                    = TimeStamp.now()
+      pool.add(chainIndex, parentTx0, now)
+      pool.add(chainIndex1, parentTx1, now)
+
+      val childTx = childTxOf(AVector(parentTx0, parentTx1))
+      pool.add(chainIndex, childTx, TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist) is AVector(parentTx0)
+      pool.collectForBlockGhost(chainIndex1, Int.MaxValue, isOutputRefExist) is AVector(parentTx1)
+    }
+
+    {
+      info("sort txs by dependency")
+      val pool     = MemPool.empty(chainIndex.from)
+      val parentTx = genTx(chainIndex, 2)
+      pool.add(chainIndex, parentTx, TimeStamp.now())
+
+      val tx0      = childTxOfRefs(AVector(parentTx.outputRefs(0)))
+      val gasPrice = tx0.unsigned.gasPrice.add(1)
+      val tx1 =
+        childTxOfRefs(AVector(parentTx.outputRefs(1), tx0.outputRefs.head)).withGasPrice(gasPrice)
+      pool.add(chainIndex, AVector(tx0, tx1), TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist) is AVector(
+        parentTx,
+        tx0,
+        tx1
+      )
+    }
+
+    {
+      info("sort txs by gas price")
+      val pool      = MemPool.empty(chainIndex.from)
+      val parentTx0 = genTx()
+      val parentTx1 = genTx().withGasPrice(parentTx0.unsigned.gasPrice.add(1))
+      pool.add(chainIndex, AVector(parentTx0, parentTx1), TimeStamp.now())
+
+      val childTx0 = childTxOf(parentTx0)
+      val childTx1 = childTxOf(parentTx1).withGasPrice(parentTx1.unsigned.gasPrice.add(1))
+      pool.add(chainIndex, AVector(childTx0, childTx1), TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist) is AVector(
+        parentTx1,
+        childTx1,
+        parentTx0,
+        childTx0
+      )
+    }
+
+    {
+      info("output ref is not exist")
+      val pool     = MemPool.empty(chainIndex.from)
+      val parentTx = genTx(chainIndex)
+      pool.add(chainIndex, parentTx, TimeStamp.now())
+
+      val invalidOutputRef = assetOutputRefGen(chainIndex.from).sample.get
+      val outputRefs       = AVector(parentTx.outputRefs.head, invalidOutputRef)
+      val childTx          = childTxOfRefs(outputRefs)
+      pool.add(chainIndex, childTx, TimeStamp.now())
+
+      val isOutputRefExist = createIsOutputRefExist(pool)
+      pool.collectForBlockGhost(chainIndex, Int.MaxValue, isOutputRefExist) is AVector(parentTx)
+      pool.collectForBlockGhost(
+        chainIndex,
+        Int.MaxValue,
+        ref => isOutputRefExist(ref) || ref == invalidOutputRef
+      ) is AVector(parentTx, childTx)
+    }
   }
 }

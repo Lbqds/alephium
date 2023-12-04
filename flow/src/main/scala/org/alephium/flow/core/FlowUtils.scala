@@ -17,6 +17,7 @@
 package org.alephium.flow.core
 
 import scala.annotation.tailrec
+import scala.collection.mutable
 import scala.reflect.ClassTag
 
 import com.typesafe.scalalogging.LazyLogging
@@ -34,6 +35,7 @@ import org.alephium.protocol.vm.StatefulVM.TxScriptExecution
 import org.alephium.serde.serialize
 import org.alephium.util.{AVector, Hex, TimeStamp}
 
+// scalastyle:off number.of.methods
 trait FlowUtils
     extends MultiChain
     with BlockFlowState
@@ -139,8 +141,54 @@ trait FlowUtils
 
   def calBestDepsUnsafe(group: GroupIndex): BlockDeps
 
-  def collectPooledTxs(chainIndex: ChainIndex): AVector[TransactionTemplate] = {
-    getMemPool(chainIndex).collectForBlock(chainIndex, mempoolSetting.txMaxNumberPerBlock)
+  def collectPooledTxsGhost(
+      chainIndex: ChainIndex,
+      groupView: BlockFlowGroupView[WorldState.Cached]
+  ): AVector[TransactionTemplate] = {
+    getMemPool(chainIndex).collectForBlockGhost(
+      chainIndex,
+      mempoolSetting.txMaxNumberPerBlock,
+      groupView.containAsset
+    )
+  }
+
+  private def filterValidTxs(
+      txs: AVector[TransactionTemplate],
+      groupView: BlockFlowGroupView[WorldState.Cached]
+  ): AVector[TransactionTemplate] = {
+    var result       = AVector.ofCapacity[TransactionTemplate](txs.length)
+    val outputRefSet = mutable.Set.empty[AssetOutputRef]
+    txs.foreach { tx =>
+      if (
+        tx.unsigned.inputs
+          .forall(i => outputRefSet.contains(i.outputRef) || groupView.containAsset(i.outputRef))
+      ) {
+        outputRefSet.addAll(tx.assetOutputRefs)
+        result = result :+ tx
+      }
+    }
+    result
+  }
+
+  // TODO: truncate txs in advance for efficiency
+  def collectTransactionsGhost(
+      chainIndex: ChainIndex,
+      groupView: BlockFlowGroupView[WorldState.Cached],
+      bestDeps: BlockDeps
+  ): IOResult[AVector[TransactionTemplate]] = {
+    IOUtils.tryExecute {
+      // some tx inputs might from bestDeps, but not loosenDeps, check inputs using groupView
+      val candidates0 = collectPooledTxsGhost(chainIndex, groupView)
+      val candidates1 = FlowUtils.filterDoubleSpending(candidates0)
+      // we don't want any tx that conflicts with bestDeps
+      val candidates2 = filterConflicts(chainIndex.from, bestDeps, candidates1, getBlockUnsafe)
+      val candidates3 = filterValidTxs(candidates2, groupView)
+      FlowUtils.truncateTxs(candidates3, maximalTxsInOneBlock, maximalGasPerBlock)
+    }
+  }
+
+  def collectPooledTxsPreGhost(chainIndex: ChainIndex): AVector[TransactionTemplate] = {
+    getMemPool(chainIndex).collectForBlockPreGhost(chainIndex, mempoolSetting.txMaxNumberPerBlock)
   }
 
   def filterValidInputsUnsafe(
@@ -153,19 +201,32 @@ trait FlowUtils
   }
 
   // TODO: truncate txs in advance for efficiency
-  def collectTransactions(
+  def collectTransactionsPreGhost(
       chainIndex: ChainIndex,
       groupView: BlockFlowGroupView[WorldState.Cached],
       bestDeps: BlockDeps
   ): IOResult[AVector[TransactionTemplate]] = {
     IOUtils.tryExecute {
-      val candidates0 = collectPooledTxs(chainIndex)
+      val candidates0 = collectPooledTxsPreGhost(chainIndex)
       val candidates1 = FlowUtils.filterDoubleSpending(candidates0)
       // some tx inputs might from bestDeps, but not loosenDeps
       val candidates2 = filterValidInputsUnsafe(candidates1, groupView)
       // we don't want any tx that conflicts with bestDeps
       val candidates3 = filterConflicts(chainIndex.from, bestDeps, candidates2, getBlockUnsafe)
       FlowUtils.truncateTxs(candidates3, maximalTxsInOneBlock, maximalGasPerBlock)
+    }
+  }
+
+  def collectTransactions(
+      chainIndex: ChainIndex,
+      groupView: BlockFlowGroupView[WorldState.Cached],
+      bestDeps: BlockDeps,
+      hardFork: HardFork
+  ): IOResult[AVector[TransactionTemplate]] = {
+    if (hardFork.isGhostEnabled()) {
+      collectTransactionsGhost(chainIndex, groupView, bestDeps)
+    } else {
+      collectTransactionsPreGhost(chainIndex, groupView, bestDeps)
     }
   }
 
@@ -229,7 +290,7 @@ trait FlowUtils
       target       <- getNextHashTarget(chainIndex, loosenDeps, templateTs)
       groupView    <- getMutableGroupView(chainIndex.from, loosenDeps)
       uncles       <- getUncles(hardFork, loosenDeps, parentHeader)
-      txCandidates <- collectTransactions(chainIndex, groupView, bestDeps)
+      txCandidates <- collectTransactions(chainIndex, groupView, bestDeps, hardFork)
       template <- prepareBlockFlow(
         chainIndex,
         loosenDeps,
