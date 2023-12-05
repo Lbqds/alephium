@@ -23,11 +23,10 @@ import io.prometheus.client.Gauge
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.core.FlowUtils.AssetOutputInfo
 import org.alephium.flow.setting.MemPoolSetting
-import org.alephium.protocol.Hash
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.LockupScript
-import org.alephium.util.{AVector, RWLock, SimpleMap, TimeStamp, U256, ValueSortedMap}
+import org.alephium.util.{AVector, RWLock, SimpleMap, TimeStamp, ValueSortedMap}
 
 /*
  * MemPool is the class to store all the unconfirmed transactions
@@ -111,7 +110,7 @@ class MemPool private (
     }
     iter(
       maxNum,
-      mutable.SortedSet.from(allTxs)(MemPool.txOrdering),
+      mutable.SortedSet.from(allTxs)(TransactionTemplate.txOrdering),
       mutable.Set.empty[AssetOutputRef],
       AVector.empty
     )
@@ -171,7 +170,7 @@ class MemPool private (
       } else if (_isFull()) {
         val lowestWeightTxId = flow.allTxs.max // tx order is reversed
         val lowestWeightTx   = flow.unsafe(lowestWeightTxId).tx
-        if (MemPool.txOrdering.lt(tx, lowestWeightTx)) {
+        if (TransactionTemplate.txOrdering.lt(tx, lowestWeightTx)) {
           _removeUnusedTx(lowestWeightTxId)
           _add(index, tx, timeStamp)
         } else {
@@ -389,13 +388,8 @@ object MemPool {
   case object DoubleSpending extends AddTxFailed
   case object AlreadyExisted extends AddTxFailed
 
-  val txOrdering: Ordering[TransactionTemplate] =
-    Ordering
-      .by[TransactionTemplate, (U256, Hash)](tx => (tx.unsigned.gasPrice.value, tx.id.value))
-      .reverse // reverse the order so that higher gas tx can be at the front of an ordered collection
-
   implicit val nodeOrdering: Ordering[FlowNode] = {
-    Ordering.by[FlowNode, TransactionTemplate](_.tx)(txOrdering)
+    Ordering.by[FlowNode, TransactionTemplate](_.tx)(TransactionTemplate.txOrdering)
   }
 
   final case class FlowNode(

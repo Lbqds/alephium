@@ -16,6 +16,8 @@
 
 package org.alephium.flow.validation
 
+import scala.collection.mutable
+
 import org.alephium.flow.core.{BlockFlow, BlockFlowGroupView}
 import org.alephium.flow.model.BlockFlowTemplate
 import org.alephium.protocol.{ALPH, Hash}
@@ -70,7 +72,7 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
 //      _ <- checkGroup(block)
 //      _ <- checkNonEmptyTransactions(block)
       _ <- checkTxNumber(block)
-      _ <- checkGasPriceDecreasing(block)
+      _ <- checkTxOrder(chainIndex, block, flow)
       _ <- checkTotalGas(block)
 //      _ <- checkMerkleRoot(block)
 //      _ <- checkFlow(block, flow)
@@ -127,7 +129,7 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
       _          <- checkGroup(block)
       _          <- checkNonEmptyTransactions(block)
       _          <- checkTxNumber(block)
-      _          <- checkGasPriceDecreasing(block)
+      _          <- checkTxOrder(block.chainIndex, block, flow)
       _          <- checkTotalGas(block)
       _          <- checkMerkleRoot(block)
       _          <- checkFlow(block, flow)
@@ -178,7 +180,7 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
     block.uncles.forall(uncle => flow.isExtendingUnsafe(block.blockDeps, uncle.blockDeps))
   }
 
-  private def checkTxs(
+  private[validation] def checkTxs(
       chainIndex: ChainIndex,
       block: Block,
       flow: BlockFlow
@@ -226,10 +228,60 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
     }
   }
 
-  private[validation] def checkGasPriceDecreasing(block: Block): BlockValidationResult[Unit] = {
+  def checkTxOrderGhost(
+      chainIndex: ChainIndex,
+      block: Block,
+      flow: BlockFlow
+  ): BlockValidationResult[Unit] = {
+    @scala.annotation.tailrec
+    def iter(
+        outputRefSet: mutable.Set[AssetOutputRef],
+        groupView: BlockFlowGroupView[WorldState.Cached],
+        txs: mutable.ArrayBuffer[Transaction],
+        txIndex: Int
+    ): BlockValidationResult[Unit] = {
+      if (txs.isEmpty) {
+        validBlock(())
+      } else {
+        txs.find(
+          _.unsigned.inputs.forall { input =>
+            outputRefSet.contains(input.outputRef) || groupView.containAsset(input.outputRef)
+          }
+        ) match {
+          case Some(tx) =>
+            if (block.transactions(txIndex) == tx) {
+              iter(
+                outputRefSet.addAll(tx.assetOutputRefs),
+                groupView,
+                txs.subtractOne(tx),
+                txIndex + 1
+              )
+            } else {
+              invalidBlock(InvalidTxOrderGhostHardFork)
+            }
+          case None => invalidBlock(InvalidTxOrderGhostHardFork)
+        }
+      }
+    }
+
+    from(flow.getMutableGroupView(chainIndex.from, block.blockDeps)).flatMap { groupView =>
+      val sortedTxs = block.transactions.sortBy(_.toTemplate)(TransactionTemplate.txOrdering)
+      iter(mutable.Set.empty, groupView, mutable.ArrayBuffer.from(sortedTxs), 0)
+    }
+  }
+
+  private[validation] def checkTxOrder(
+      chainIndex: ChainIndex,
+      block: Block,
+      flow: BlockFlow
+  ): BlockValidationResult[Unit] = {
     val hardFork = networkConfig.getHardFork(block.timestamp)
     if (hardFork.isGhostEnabled()) {
-      Right(())
+      if (brokerConfig.contains(chainIndex.from)) {
+        checkTxOrderGhost(chainIndex, block, flow)
+      } else {
+        Right(())
+      }
     } else {
       val result = block.transactions.foldE[Unit, GasPrice](GasPrice(ALPH.MaxALPHValue)) {
         case (lastGasPrice, tx) =>

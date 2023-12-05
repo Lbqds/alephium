@@ -353,6 +353,11 @@ final case class TransactionTemplate(
 }
 
 object TransactionTemplate {
+  val txOrdering: Ordering[TransactionTemplate] =
+    Ordering
+      .by[TransactionTemplate, (U256, Hash)](tx => (tx.unsigned.gasPrice.value, tx.id.value))
+      .reverse // reverse the order so that higher gas tx can be at the front of an ordered collection
+
   implicit val serde: Serde[TransactionTemplate] = Serde.forProduct3(
     TransactionTemplate.apply,
     t => (t.unsigned, t.inputSignatures, t.scriptSignatures)

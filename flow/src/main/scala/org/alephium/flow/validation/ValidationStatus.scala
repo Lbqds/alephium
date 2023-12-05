@@ -57,6 +57,7 @@ final case class HeaderIOError(e: IOError)                          extends Inva
 final case object EmptyTransactionList                              extends InvalidBlockStatus
 final case object TooManyTransactions                               extends InvalidBlockStatus
 final case object TxGasPriceNonDecreasing                           extends InvalidBlockStatus
+case object InvalidTxOrderGhostHardFork                             extends InvalidBlockStatus
 final case object TooMuchGasUsed                                    extends InvalidBlockStatus
 final case object InvalidCoinbaseFormat                             extends InvalidBlockStatus
 final case object InvalidCoinbaseData                               extends InvalidBlockStatus

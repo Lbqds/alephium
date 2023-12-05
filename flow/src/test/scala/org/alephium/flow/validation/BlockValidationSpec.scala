@@ -23,7 +23,7 @@ import org.scalatest.EitherValues._
 import org.alephium.flow.FlowFixture
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.io.StoragesFixture
-import org.alephium.protocol.{ALPH, Hash, Signature, SignatureSchema}
+import org.alephium.protocol.{ALPH, Hash, PrivateKey, PublicKey, Signature, SignatureSchema}
 import org.alephium.protocol.config._
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm
@@ -368,10 +368,10 @@ class BlockValidationSpec extends AlephiumSpec {
     block.copy(transactions = moreTxs).fail(TooManyTransactions)(checkBlockUnit(_, blockFlow))
   }
 
-  it should "check the gas price decreasing" in new Fixture {
+  it should "check the gas price decreasing for pre-ghost hardfork" in new Fixture {
     override val configValues =
       Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
-    implicit val validator = checkGasPriceDecreasing _
+    implicit val validator = block => checkTxOrder(chainIndex, block, blockFlow)
 
     val block = transfer(blockFlow, chainIndex)
     val low   = block.nonCoinbase.head
@@ -390,6 +390,8 @@ class BlockValidationSpec extends AlephiumSpec {
   }
 
   it should "check the amount of gas" in new Fixture {
+    override val configValues =
+      Map(("alephium.network.ghost-hard-fork-timestamp", TimeStamp.Max.millis))
     implicit val validator = checkTotalGas _
 
     val block = transfer(blockFlow, chainIndex)
@@ -800,19 +802,28 @@ class BlockValidationSpec extends AlephiumSpec {
   trait SequentialTxsFixture extends Fixture {
     networkConfig.getHardFork(TimeStamp.now()) is HardFork.Ghost
 
-    val (privateKey, _) = {
+    val genesisKey = genesisKeys(chainIndex.from.value)._1
+    val privateKey = {
       val (privateKey, publicKey) = chainIndex.from.generateKey
-      val genesisKey              = genesisKeys(chainIndex.from.value)._1
       addAndCheck(blockFlow, transfer(blockFlow, genesisKey, publicKey, ALPH.alph(20)))
-      (privateKey, publicKey)
+      privateKey
     }
 
-    val (_, toPublicKey0) = chainIndex.to.generateKey
-    val tx0 = transfer(blockFlow, privateKey, toPublicKey0, ALPH.alph(5)).nonCoinbase.head
-    blockFlow.grandPool.add(chainIndex, tx0.toTemplate, TimeStamp.now())
+    def transferTx(
+        from: PrivateKey,
+        to: PublicKey,
+        amount: U256,
+        gasPrice: GasPrice
+    ): Transaction = {
+      transferWithGas(blockFlow, from, to, amount, gasPrice).nonCoinbase.head
+    }
   }
 
   it should "check double spending for sequential txs" in new SequentialTxsFixture {
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0 = transfer(blockFlow, privateKey, toPublicKey0, ALPH.alph(5)).nonCoinbase.head
+    blockFlow.grandPool.add(chainIndex, tx0.toTemplate, TimeStamp.now())
+
     val (_, toPublicKey1) = chainIndex.to.generateKey
     val (_, toPublicKey2) = chainIndex.to.generateKey
     val tx1 = transfer(blockFlow, privateKey, toPublicKey1, ALPH.alph(5)).nonCoinbase.head
@@ -822,15 +833,34 @@ class BlockValidationSpec extends AlephiumSpec {
     tx1.unsigned.inputs is tx2.unsigned.inputs
 
     val block = mineWithTxs(blockFlow, chainIndex, AVector(tx0, tx1, tx2))
-    block.fail(BlockDoubleSpending)(checkBlockUnit(_, blockFlow))
+    block.fail(BlockDoubleSpending)(checkBlockDoubleSpending)
   }
 
-  it should "invalidate block if child tx is in front of parent tx" in new SequentialTxsFixture {
-    val (_, toPublicKey1) = chainIndex.to.generateKey
-    val tx1 = transfer(blockFlow, privateKey, toPublicKey1, ALPH.alph(5)).nonCoinbase.head
-    tx1.unsigned.inputs.length is 1
-    tx1.unsigned.inputs.head.outputRef is tx0.assetOutputRefs(1)
-    val block = mineWithTxs(blockFlow, chainIndex, AVector(tx1, tx0))
-    checkBlock(block, blockFlow).leftValue isE ExistInvalidTx(tx1, NonExistInput)
+  it should "check the tx order for ghost hardfork" in new SequentialTxsFixture {
+    val (_, toPublicKey) = chainIndex.to.generateKey
+    val gasPrice0        = GasPrice(nonCoinbaseMinGasPrice.value.addOneUnsafe())
+    val tx0              = transferTx(privateKey, toPublicKey, ALPH.alph(5), gasPrice0)
+    blockFlow.grandPool.add(chainIndex, tx0.toTemplate, TimeStamp.now())
+
+    val gasPrice1 = GasPrice(gasPrice0.value.addOneUnsafe())
+    val tx1       = transferTx(privateKey, toPublicKey, ALPH.alph(5), gasPrice1)
+    blockFlow.grandPool.add(chainIndex, tx1.toTemplate, TimeStamp.now())
+
+    val gasPrice2 = nonCoinbaseMinGasPrice
+    val tx2       = transferTx(genesisKey, toPublicKey, ALPH.alph(5), gasPrice2)
+    blockFlow.grandPool.add(chainIndex, tx2.toTemplate, TimeStamp.now())
+
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase is AVector(tx0, tx1, tx2)
+    addAndCheck(blockFlow, block)
+
+    implicit val validator = block => checkTxOrder(chainIndex, block, blockFlow)
+    block.copy(transactions = AVector(tx0, tx2)).pass()
+    block.copy(transactions = AVector(tx0, tx1)).pass()
+    block.copy(transactions = AVector(tx0, tx1, tx2)).pass()
+    block.copy(transactions = AVector(tx1, tx0)).fail(InvalidTxOrderGhostHardFork)
+    block.copy(transactions = AVector(tx2, tx0)).fail(InvalidTxOrderGhostHardFork)
+    block.copy(transactions = AVector(tx2, tx0, tx1)).fail(InvalidTxOrderGhostHardFork)
+    block.copy(transactions = AVector(tx0, tx2, tx1)).fail(InvalidTxOrderGhostHardFork)
   }
 }
