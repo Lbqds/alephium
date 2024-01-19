@@ -181,7 +181,7 @@ trait BlockValidation extends Validation[Block, InvalidBlockStatus, Option[World
     assume(uncles.nonEmpty)
     val blockchain = flow.getBlockChain(chainIndex)
     for {
-      parentHeader           <- from(blockchain.getBlockHeader(block.parentHash))
+      parentHeader           <- from(blockchain.getBlockHeader(block.uncleHash(chainIndex.to)))
       usedUnclesAndAncestors <- from(blockchain.getUsedUnclesAndAncestors(parentHeader))
       (usedUncles, ancestors) = usedUnclesAndAncestors
       isValid = uncles.forall { uncle =>
