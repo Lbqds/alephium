@@ -296,6 +296,7 @@ trait FlowUtils
     templateValidator.validateTemplate(chainIndex, template, this) match {
       case Left(Left(error)) => Left(error)
       case Left(Right(error)) =>
+        logger.error(s">>>>>>>>>>>>>>>> ${error}")
         error match {
           case ExistInvalidTx(t, _) =>
             logger.warn(
