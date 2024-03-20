@@ -16,7 +16,8 @@
 
 package org.alephium.app
 
-import java.nio.file.Path
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths, StandardOpenOption}
 
 import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext
@@ -30,6 +31,7 @@ import org.alephium.api.model.{Amount, Destination}
 import org.alephium.app.{ApiConfig, BootUp, CpuSoloMiner, Server}
 import org.alephium.crypto.wallet.Mnemonic
 import org.alephium.flow.setting.{AlephiumConfig, Configs, Platform}
+import org.alephium.flow.setting.ConfigUtils.timeStampReader
 import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model.{Address, GroupIndex}
@@ -38,7 +40,7 @@ import org.alephium.util.{AVector, Env, TimeStamp}
 
 class LocalCluster(
     numberOfNodes: Int,
-    numZerosAtLeastInHash: Int,
+    singleNodeDiff: Int,
     ghostHardforkTimestamp: TimeStamp
 ) extends StrictLogging {
 
@@ -99,6 +101,10 @@ class LocalCluster(
         s""""${bindAddress.getHostString}:${bindAddress.getPort}""""
       }
       .mkString("[", ",", "]")
+
+    val numZerosAtLeastInHash =
+      (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
+
     ConfigFactory.parseString(
       s"""
          |alephium.genesis.allocations = [
@@ -236,4 +242,59 @@ object LocalCluster extends StrictLogging {
     }
   }
   // scalastyle:on magic.number
+
+  final case class LocalClusterConfig(
+      numberOfNodes: Int,
+      singleNodeDiff: Int,
+      ghostHardForkTimestamp: TimeStamp
+  )
+
+  object LocalClusterConfig {
+    def from(config: Config): LocalClusterConfig = {
+      LocalClusterConfig(
+        config.getInt("number-of-nodes"),
+        config.getInt("single-node-diff"),
+        timeStampReader.read(config, "ghost-hard-fork-timestamp")
+      )
+    }
+  }
+
+  def loadLocalClusterConfig(): LocalClusterConfig = {
+    val homeDir = sys.env.get("ALEPHIUM_LOCAL_CLUSTER_HOME") match {
+      case Some(rawPath) =>
+        Paths.get(rawPath)
+      case None =>
+        Paths.get(System.getProperty("user.home")).resolve(".alephium-local-cluster")
+    }
+
+    val configFile = homeDir.resolve("local-cluster.conf").toFile
+
+    val defaultConfigStr =
+      s"""number-of-nodes = 3
+         |single-node-diff = 12
+         |ghost-hard-fork-timestamp = ${TimeStamp.now().plusMinutesUnsafe(10).millis}
+      """.stripMargin
+    val defaultConfig = ConfigFactory.parseString(defaultConfigStr)
+
+    if (configFile.exists) {
+      LocalClusterConfig.from(
+        ConfigFactory
+          .parseFile(configFile)
+          .withFallback(defaultConfig)
+      )
+    } else {
+      try {
+        Files.createDirectories(homeDir)
+        Files.write(
+          configFile.toPath,
+          defaultConfigStr.getBytes(StandardCharsets.UTF_8),
+          StandardOpenOption.CREATE
+        )
+        LocalClusterConfig.from(defaultConfig)
+      } catch {
+        case e: Throwable =>
+          throw new RuntimeException(s"Failed to write config file", e)
+      }
+    }
+  }
 }

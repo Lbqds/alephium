@@ -22,20 +22,19 @@ import com.typesafe.scalalogging.StrictLogging
 
 import org.alephium.app.{LocalCluster, Server}
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.util.TimeStamp
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
 object LaunchLocalCluster extends App with StrictLogging {
-  val numberOfNodes: Int  = 3
-  val singleNodeDiff: Int = 12
-  val numZerosAtLeastInHash: Int =
-    (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
+  import LocalCluster._
 
-  val ghostHardforkTimestamp: TimeStamp = TimeStamp.now().plusMinutesUnsafe(10)
+  val localClusterConfig: LocalClusterConfig = loadLocalClusterConfig()
 
-  val localCluster: LocalCluster =
-    new LocalCluster(numberOfNodes, numZerosAtLeastInHash, ghostHardforkTimestamp)
+  val localCluster: LocalCluster = new LocalCluster(
+    localClusterConfig.numberOfNodes,
+    localClusterConfig.singleNodeDiff,
+    localClusterConfig.ghostHardForkTimestamp
+  )
 
   @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))
   implicit val executionContext: ExecutionContext = ExecutionContext.Implicits.global
@@ -46,7 +45,7 @@ object LaunchLocalCluster extends App with StrictLogging {
 
   localCluster.startMiner(bootstrapServer)
 
-  val restOfServers: Seq[Server] = (1 until numberOfNodes).map { index =>
+  val restOfServers: Seq[Server] = (1 until localClusterConfig.numberOfNodes).map { index =>
     val bootstrapNetworkConfig = bootstrapServer.config.network
     val publicPort             = bootstrapNetworkConfig.bindAddress.getPort + index
     val restPort               = bootstrapNetworkConfig.restPort + index
@@ -57,8 +56,8 @@ object LaunchLocalCluster extends App with StrictLogging {
 
   val servers: Seq[Server] = bootstrapServer +: restOfServers
 
-  LocalCluster.Wallet.restoreWallets(servers)
+  Wallet.restoreWallets(servers)
 
-  new LocalCluster.TransferSimutation(servers).simulate()
+  new TransferSimutation(servers).simulate()
 }
 // scalastyle:on magic.number
