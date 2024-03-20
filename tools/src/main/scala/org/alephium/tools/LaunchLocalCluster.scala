@@ -27,8 +27,11 @@ import org.alephium.util.TimeStamp
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
 object LaunchLocalCluster extends App with StrictLogging {
-  val numberOfNodes: Int                = 3
-  val numZerosAtLeastInHash: Int        = 12
+  val numberOfNodes: Int  = 3
+  val singleNodeDiff: Int = 12
+  val numZerosAtLeastInHash: Int =
+    (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
+
   val ghostHardforkTimestamp: TimeStamp = TimeStamp.now().plusMinutesUnsafe(10)
 
   val localCluster: LocalCluster =
