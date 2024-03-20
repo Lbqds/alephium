@@ -16,26 +16,43 @@
 
 package org.alephium.tools
 
+import scala.concurrent.ExecutionContext
+
 import com.typesafe.scalalogging.StrictLogging
 
 import org.alephium.app.{LocalCluster, Server}
+import org.alephium.protocol.config.GroupConfig
 import org.alephium.util.TimeStamp
 
 // scalastyle:off magic.number
+@SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
 object LaunchLocalCluster extends App with StrictLogging {
-  val numberOfNodes: Int = 3
+  val numberOfNodes: Int                = 3
   val ghostHardforkTimestamp: TimeStamp = TimeStamp.now().plusMinutesUnsafe(10)
-  val localCluster: LocalCluster = new LocalCluster(numberOfNodes, ghostHardforkTimestamp)
+  val localCluster: LocalCluster        = new LocalCluster(numberOfNodes, ghostHardforkTimestamp)
 
-  val bootstrapServer: Server = localCluster.bootServer(index = 0, 19973, 22973, 21973, 20973, Seq.empty)
+  @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))
+  implicit val executionContext: ExecutionContext = ExecutionContext.Implicits.global
+
+  val bootstrapServer: Server =
+    localCluster.bootServer(index = 0, 19973, 22973, 21973, 20973, Seq.empty)
+  implicit val groupConfig: GroupConfig = bootstrapServer.config.broker
+
   localCluster.startMiner(bootstrapServer)
 
-  (1 until numberOfNodes).map { index =>
+  val restOfServers: Seq[Server] = (1 until numberOfNodes).map { index =>
     val bootstrapNetworkConfig = bootstrapServer.config.network
-    val publicPort = bootstrapNetworkConfig.bindAddress.getPort + index
-    val restPort = bootstrapNetworkConfig.restPort + index
-    val wsPort = bootstrapNetworkConfig.wsPort + index
-    val minerApiPort = bootstrapNetworkConfig.minerApiPort + index
+    val publicPort             = bootstrapNetworkConfig.bindAddress.getPort + index
+    val restPort               = bootstrapNetworkConfig.restPort + index
+    val wsPort                 = bootstrapNetworkConfig.wsPort + index
+    val minerApiPort           = bootstrapNetworkConfig.minerApiPort + index
     localCluster.bootServer(index, publicPort, restPort, wsPort, minerApiPort, Seq(bootstrapServer))
   }
+
+  val servers: Seq[Server] = bootstrapServer +: restOfServers
+
+  LocalCluster.Wallet.restoreWallets(servers)
+
+  new LocalCluster.TransferSimutation(servers).simulate()
 }
+// scalastyle:on magic.number

@@ -18,28 +18,38 @@ package org.alephium.app
 
 import java.nio.file.Path
 
+import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext
+import scala.util.{Failure, Random, Success}
 
 import akka.actor.ActorSystem
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.StrictLogging
 
+import org.alephium.api.model.{Amount, Destination}
 import org.alephium.app.{ApiConfig, BootUp, CpuSoloMiner, Server}
+import org.alephium.crypto.wallet.Mnemonic
 import org.alephium.flow.setting.{AlephiumConfig, Configs, Platform}
-import org.alephium.util.{Env, TimeStamp}
+import org.alephium.protocol.ALPH
+import org.alephium.protocol.config.GroupConfig
+import org.alephium.protocol.model.{Address, GroupIndex}
+import org.alephium.protocol.vm.LockupScript
+import org.alephium.util.{AVector, Env, TimeStamp}
 
 class LocalCluster(
-  numberOfNodes: Int,
-  ghostHardforkTimestamp: TimeStamp
+    numberOfNodes: Int,
+    ghostHardforkTimestamp: TimeStamp
 ) extends StrictLogging {
 
+  import LocalCluster._
+
   def bootServer(
-    index: Int,
-    publicPort: Int,
-    restPort: Int,
-    wsPort: Int,
-    minerApiPort: Int,
-    bootStrapNodes: Seq[Server]
+      index: Int,
+      publicPort: Int,
+      restPort: Int,
+      wsPort: Int,
+      minerApiPort: Int,
+      bootStrapNodes: Seq[Server]
   ): Server = {
     try {
       val rootPath: Path = Platform.getRootPath(Env.Test)
@@ -47,13 +57,13 @@ class LocalCluster(
         Env.Test,
         rootPath,
         overwrite = true,
-        predefined = getConfig(publicPort, restPort, wsPort, minerApiPort, bootStrapNodes)
+        predefined = getConfig(publicPort, restPort, wsPort, minerApiPort, rootPath, bootStrapNodes)
       )
 
       val flowSystem: ActorSystem = ActorSystem(s"flow-$index", baseConfig)
 
-      implicit val config: AlephiumConfig = AlephiumConfig.load(baseConfig)
-      implicit val apiConfig: ApiConfig = ApiConfig.load(baseConfig)
+      implicit val config: AlephiumConfig             = AlephiumConfig.load(baseConfig)
+      implicit val apiConfig: ApiConfig               = ApiConfig.load(baseConfig)
       implicit val executionContext: ExecutionContext = flowSystem.dispatcher
 
       val bootUp = new BootUp(rootPath, flowSystem)
@@ -67,61 +77,162 @@ class LocalCluster(
   }
 
   def startMiner(server: Server): CpuSoloMiner = {
-    val hostAddr = server.apiConfig.networkInterface.getHostAddress()
+    val hostAddr     = server.apiConfig.networkInterface.getHostAddress()
     val minerApiPort = server.config.network.minerApiPort
     val apiAddresses = s"$hostAddr:$minerApiPort"
     new CpuSoloMiner(server.config, server.flowSystem, Some(apiAddresses))
   }
 
+  // scalastyle:off method.length
   private def getConfig(
-    publicPort: Int,
-    restPort: Int,
-    wsPort: Int,
-    minerApiPort: Int,
-    bootStrapNodes: Seq[Server]
+      publicPort: Int,
+      restPort: Int,
+      wsPort: Int,
+      minerApiPort: Int,
+      rootPath: Path,
+      bootStrapNodes: Seq[Server]
   ): Config = {
-    val bootStrapConfig = bootStrapNodes.map { server =>
-      val ipAddr = server.config.network.bindAddress.getHostString
-      val port = server.config.network.bindAddress.getPort
-      s""""$ipAddr:$port""""
-    }.mkString("[", ",", "]")
+    val bootStrapConfig = bootStrapNodes
+      .map { server =>
+        val bindAddress = server.config.network.bindAddress
+        s""""${bindAddress.getHostString}:${bindAddress.getPort}""""
+      }
+      .mkString("[", ",", "]")
     ConfigFactory.parseString(
       s"""
-        |alephium.consensus.num-zeros-at-least-in-hash = 12
-        |alephium.consensus.uncle-dependency-gap-time = 0 seconds
-        |alephium.consensus.mainnet.block-target-time = 64 seconds
-        |alephium.consensus.ghost.block-target-time = 16 seconds
-        |
-        |alephium.discovery.bootstrap = $bootStrapConfig
-        |alephium.discovery.max-clique-from-same-ip = ${this.numberOfNodes}
-        |
-        |alephium.node.event-log.enabled=true
-        |alephium.node.event-log.index-by-tx-id = true
-        |alephium.node.event-log.index-by-block-hash = true
-        |
-        |alephium.api.network-interface = "127.0.0.1"
-        |alephium.api.api-key-enabled = false
-        |
-        |alephium.network.network-id = 4
-        |alephium.ghost-hard-fork-timestamp = ${this.ghostHardforkTimestamp.millis}
-        |alephium.network.rest-port = $restPort
-        |alephium.network.ws-port = $wsPort
-        |alephium.network.miner-api-port = $minerApiPort
-        |alephium.network.bind-address  = "127.0.0.1:$publicPort"
-        |alephium.network.internal-address  = "127.0.0.1:$publicPort"
-        |alephium.network.coordinator-address  = "127.0.0.1:$publicPort"
-        |alephium.network.external-address  = "127.0.0.1:$publicPort"
-        |alephium.network.max-clique-from-same-ip = ${this.numberOfNodes}
-        |
-        |alephium.mining.miner-addresses = [
-        |"1FsroWmeJPBhcPiUr37pWXdojRBe6jdey9uukEXk1TheA",
-        |"1CQvSXsmM5BMFKguKDPpNUfw1idiut8UifLtT8748JdHc",
-        |"193maApeJWrz9GFwWCfa982ccLARVE9Y1WgKSJaUs7UAx",
-        |"16fZKYPCZJv2TP3FArA9FLUQceTS9U8xVnSjxFG9MBKyY"
-        |]
-        |
-        |alephium.mining.api-interface = "127.0.0.1"
+         |alephium.genesis.allocations = [
+         |  {
+         |    address = "${Genesis.address}",
+         |    amount = 1000000000000000000000000,
+         |    lock-duration = 0 seconds
+         |  }
+         |]
+         |
+         |alephium.consensus.num-zeros-at-least-in-hash = 12
+         |alephium.consensus.uncle-dependency-gap-time = 0 seconds
+         |alephium.consensus.mainnet.block-target-time = 64 seconds
+         |alephium.consensus.ghost.block-target-time = 16 seconds
+         |
+         |alephium.discovery.bootstrap = $bootStrapConfig
+         |alephium.discovery.max-clique-from-same-ip = ${this.numberOfNodes}
+         |
+         |alephium.node.event-log.enabled=true
+         |alephium.node.event-log.index-by-tx-id = true
+         |alephium.node.event-log.index-by-block-hash = true
+         |
+         |alephium.api.network-interface = "127.0.0.1"
+         |alephium.api.api-key-enabled = false
+         |
+         |alephium.network.network-id = 4
+         |alephium.ghost-hard-fork-timestamp = ${this.ghostHardforkTimestamp.millis}
+         |alephium.network.rest-port = $restPort
+         |alephium.network.ws-port = $wsPort
+         |alephium.network.miner-api-port = $minerApiPort
+         |alephium.network.bind-address  = "127.0.0.1:$publicPort"
+         |alephium.network.internal-address  = "127.0.0.1:$publicPort"
+         |alephium.network.coordinator-address  = "127.0.0.1:$publicPort"
+         |alephium.network.external-address  = "127.0.0.1:$publicPort"
+         |alephium.network.max-clique-from-same-ip = ${this.numberOfNodes}
+         |
+         |alephium.mining.miner-addresses = [
+         |"1FsroWmeJPBhcPiUr37pWXdojRBe6jdey9uukEXk1TheA",
+         |"1CQvSXsmM5BMFKguKDPpNUfw1idiut8UifLtT8748JdHc",
+         |"193maApeJWrz9GFwWCfa982ccLARVE9Y1WgKSJaUs7UAx",
+         |"16fZKYPCZJv2TP3FArA9FLUQceTS9U8xVnSjxFG9MBKyY"
+         |]
+         |alephium.mining.api-interface = "127.0.0.1"
+         |
+         |alephium.wallet.secret-dir = "${rootPath}"
         """.stripMargin
     )
   }
+  // scalastyle:on method.length
+}
+
+object LocalCluster extends StrictLogging {
+  object Genesis {
+    val address: String    = "14PqtYSSbwpUi2RJKUvv9yUwGafd6yHbEcke7ionuiE7w"
+    val publicKey: String  = "03e75902fa24caff042b2b4c350e8f2ffeb3cb95f4263f0e109a2c2d7aa3dcae5c"
+    val privateKey: String = "d24967efb7f1b558ad40a4d71593ceb5b3cecf46d17f0e68ef53def6b391c33d"
+    val mnemonic: String =
+      "toward outdoor daughter deny mansion bench water alien crumble " +
+        "mother exchange screen salute antenna abuse key hair crisp debate " +
+        "goose great market core screen"
+  }
+
+  object Wallet {
+    val walletName = "local-cluster-test-wallet"
+    val password   = "local-cluster-test-wallet-password"
+
+    def restoreWallets(servers: Seq[Server]): Unit = {
+      servers.foreach(restoreWallet)
+    }
+
+    @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
+    def restoreWallet(server: Server): Unit = {
+      val walletApp = server.walletApp.get
+      val result = walletApp.walletService.restoreWallet(
+        password,
+        Mnemonic.from(Genesis.mnemonic).get,
+        false,
+        walletName,
+        None
+      )
+
+      result match {
+        case Right(name) =>
+          logger.info(s"Restore wallet ${name} successfully")
+        case Left(reason) =>
+          logger.error(s"Restore wallet failed: $reason")
+      }
+    }
+
+    @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
+    def transfer(server: Server, address: Address.Asset)(implicit
+        executionContext: ExecutionContext
+    ): Unit = {
+      val walletApp = server.walletApp.get
+      val transferResult = walletApp.walletService.transfer(
+        walletName,
+        AVector(
+          Destination(
+            address,
+            attoAlphAmount = Amount(ALPH.oneAlph)
+          )
+        ),
+        gas = None,
+        gasPrice = None,
+        utxosLimit = None
+      )
+
+      transferResult.onComplete {
+        case Success(Right((txId, fromGroup, toGroup))) =>
+          logger.info(s"Transfer ${fromGroup} -> ${toGroup} submitted, tx: $txId")
+        case Success(Left(reason)) =>
+          logger.error(s"Transfer failed: $reason")
+        case Failure(exception) =>
+          logger.error(s"Transfer error: $exception")
+      }
+    }
+  }
+
+  // scalastyle:off magic.number
+  @SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
+  class TransferSimutation(servers: Seq[Server])(implicit
+      groupConfig: GroupConfig,
+      executionContext: ExecutionContext
+  ) {
+    @tailrec
+    final def simulate(): Unit = {
+      val index          = Random.nextInt(servers.length)
+      val groupIndex     = GroupIndex.unsafe(Random.nextInt(groupConfig.groups))
+      val (_, publicKey) = groupIndex.generateKey
+      val address        = Address.Asset(LockupScript.p2pkh(publicKey))
+      Wallet.transfer(servers(index), address)
+
+      Thread.sleep(2000)
+      simulate()
+    }
+  }
+  // scalastyle:on magic.number
 }
