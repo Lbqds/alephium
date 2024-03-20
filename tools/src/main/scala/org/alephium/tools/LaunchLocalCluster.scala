@@ -28,8 +28,11 @@ import org.alephium.util.TimeStamp
 @SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
 object LaunchLocalCluster extends App with StrictLogging {
   val numberOfNodes: Int                = 3
+  val numZerosAtLeastInHash: Int        = 12
   val ghostHardforkTimestamp: TimeStamp = TimeStamp.now().plusMinutesUnsafe(10)
-  val localCluster: LocalCluster        = new LocalCluster(numberOfNodes, ghostHardforkTimestamp)
+
+  val localCluster: LocalCluster =
+    new LocalCluster(numberOfNodes, numZerosAtLeastInHash, ghostHardforkTimestamp)
 
   @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))
   implicit val executionContext: ExecutionContext = ExecutionContext.Implicits.global

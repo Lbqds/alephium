@@ -38,6 +38,7 @@ import org.alephium.util.{AVector, Env, TimeStamp}
 
 class LocalCluster(
     numberOfNodes: Int,
+    numZerosAtLeastInHash: Int,
     ghostHardforkTimestamp: TimeStamp
 ) extends StrictLogging {
 
@@ -108,13 +109,13 @@ class LocalCluster(
          |  }
          |]
          |
-         |alephium.consensus.num-zeros-at-least-in-hash = 12
+         |alephium.consensus.num-zeros-at-least-in-hash = $numZerosAtLeastInHash
          |alephium.consensus.uncle-dependency-gap-time = 0 seconds
          |alephium.consensus.mainnet.block-target-time = 64 seconds
          |alephium.consensus.ghost.block-target-time = 16 seconds
          |
          |alephium.discovery.bootstrap = $bootStrapConfig
-         |alephium.discovery.max-clique-from-same-ip = ${this.numberOfNodes}
+         |alephium.discovery.max-clique-from-same-ip = ${numberOfNodes}
          |
          |alephium.node.event-log.enabled=true
          |alephium.node.event-log.index-by-tx-id = true
@@ -124,7 +125,7 @@ class LocalCluster(
          |alephium.api.api-key-enabled = false
          |
          |alephium.network.network-id = 4
-         |alephium.ghost-hard-fork-timestamp = ${this.ghostHardforkTimestamp.millis}
+         |alephium.ghost-hard-fork-timestamp = ${ghostHardforkTimestamp.millis}
          |alephium.network.rest-port = $restPort
          |alephium.network.ws-port = $wsPort
          |alephium.network.miner-api-port = $minerApiPort
@@ -132,7 +133,7 @@ class LocalCluster(
          |alephium.network.internal-address  = "127.0.0.1:$publicPort"
          |alephium.network.coordinator-address  = "127.0.0.1:$publicPort"
          |alephium.network.external-address  = "127.0.0.1:$publicPort"
-         |alephium.network.max-clique-from-same-ip = ${this.numberOfNodes}
+         |alephium.network.max-clique-from-same-ip = ${numberOfNodes}
          |
          |alephium.mining.miner-addresses = [
          |"1FsroWmeJPBhcPiUr37pWXdojRBe6jdey9uukEXk1TheA",
