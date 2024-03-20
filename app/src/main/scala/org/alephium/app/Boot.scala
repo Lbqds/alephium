@@ -34,7 +34,7 @@ import org.alephium.util.{AVector, Duration, Env}
 
 object Boot extends App with StrictLogging {
   try {
-    (new BootUp).init()
+    BootUp().init()
   } catch {
     case error: Throwable =>
       logger.error(s"Cannot initialize system: $error")
@@ -43,17 +43,13 @@ object Boot extends App with StrictLogging {
 }
 
 @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
-class BootUp extends StrictLogging {
-  val rootPath: Path = Platform.getRootPath()
+class BootUp(rootPath: Path, flowSystem: ActorSystem)(implicit
+    config: AlephiumConfig,
+    apiConfig: ApiConfig,
+    executionContext: ExecutionContext
+) extends StrictLogging {
   val typesafeConfig: Config =
     Configs.parseConfigAndValidate(Env.currentEnv, rootPath, overwrite = true)
-  implicit val config: AlephiumConfig = AlephiumConfig.load(typesafeConfig, "alephium")
-  implicit val apiConfig: ApiConfig   = ApiConfig.load(typesafeConfig, "alephium.api")
-  val flowSystem: ActorSystem         = ActorSystem("flow", typesafeConfig)
-
-  @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))
-  implicit val executionContext: ExecutionContext =
-    ExecutionContext.fromExecutor(new java.util.concurrent.ForkJoinPool(4))
 
   val server: Server = Server(rootPath, flowSystem)
 
@@ -122,15 +118,37 @@ class BootUp extends StrictLogging {
   }
 
   def collectBuildInfo(): Unit = {
-    Gauge
-      .build("alephium_build_info", "Alephium full node build info")
-      .labelNames("release_version", "commit_id")
-      .register()
-      .labels(BuildInfo.releaseVersion, BuildInfo.commitId)
-      .set(1)
+    try {
+      Gauge
+        .build("alephium_build_info", "Alephium full node build info")
+        .labelNames("release_version", "commit_id")
+        .register()
+        .labels(BuildInfo.releaseVersion, BuildInfo.commitId)
+        .set(1)
+    } catch {
+      case e: IllegalArgumentException =>
+        logger.info(s"Gauge with name `alephium_build_info` already registered: $e")
+    }
 
     logger.info(s"Build info: ${BuildInfo}")
   }
 
   def showBlocks(blocks: AVector[Block]): String = blocks.map(_.shortHex).mkString("-")
+}
+
+object BootUp {
+  def apply(): BootUp = {
+    val rootPath: Path = Platform.getRootPath()
+    val typesafeConfig: Config =
+      Configs.parseConfigAndValidate(Env.currentEnv, rootPath, overwrite = true)
+    implicit val config: AlephiumConfig = AlephiumConfig.load(typesafeConfig, "alephium")
+    implicit val apiConfig: ApiConfig   = ApiConfig.load(typesafeConfig, "alephium.api")
+    val flowSystem: ActorSystem         = ActorSystem("flow", typesafeConfig)
+
+    @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))
+    implicit val executionContext: ExecutionContext =
+      ExecutionContext.fromExecutor(new java.util.concurrent.ForkJoinPool(4))
+
+    new BootUp(rootPath, flowSystem)
+  }
 }
