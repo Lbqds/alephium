@@ -271,8 +271,8 @@ object LocalCluster extends StrictLogging {
 
     val defaultConfigStr =
       s"""number-of-nodes = 3
-         |single-node-diff = 12
-         |ghost-hard-fork-timestamp = ${TimeStamp.now().plusMinutesUnsafe(10).millis}
+         |single-node-diff = 17
+         |ghost-hard-fork-timestamp = ${TimeStamp.now().plusHoursUnsafe(1).millis}
       """.stripMargin
     val defaultConfig = ConfigFactory.parseString(defaultConfigStr)
 
