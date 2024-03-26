@@ -43,8 +43,6 @@ object LaunchLocalCluster extends App with StrictLogging {
     localCluster.bootServer(index = 0, 19973, 22973, 21973, 20973, Seq.empty)
   implicit val groupConfig: GroupConfig = bootstrapServer.config.broker
 
-  localCluster.startMiner(bootstrapServer)
-
   val restOfServers: Seq[Server] = (1 until localClusterConfig.numberOfNodes).map { index =>
     val bootstrapNetworkConfig = bootstrapServer.config.network
     val publicPort             = bootstrapNetworkConfig.bindAddress.getPort + index
@@ -55,6 +53,8 @@ object LaunchLocalCluster extends App with StrictLogging {
   }
 
   val servers: Seq[Server] = bootstrapServer +: restOfServers
+
+  localCluster.startMiner(servers)
 
   Wallet.restoreWallets(servers)
 

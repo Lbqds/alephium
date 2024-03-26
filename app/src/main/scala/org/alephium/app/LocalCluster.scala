@@ -79,11 +79,14 @@ class LocalCluster(
     }
   }
 
-  def startMiner(server: Server): CpuSoloMiner = {
-    val hostAddr     = server.apiConfig.networkInterface.getHostAddress()
-    val minerApiPort = server.config.network.minerApiPort
-    val apiAddresses = s"$hostAddr:$minerApiPort"
-    new CpuSoloMiner(server.config, server.flowSystem, Some(apiAddresses))
+  def startMiner(servers: Seq[Server]): CpuSoloMiner = {
+    assume(servers.length > 0)
+    val apiAddresses = servers.map { server =>
+      val hostAddr     = server.apiConfig.networkInterface.getHostAddress()
+      val minerApiPort = server.config.network.minerApiPort
+      s"$hostAddr:$minerApiPort"
+    }.mkString(",")
+    new CpuSoloMiner(servers(0).config, servers(0).flowSystem, Some(apiAddresses))
   }
 
   // scalastyle:off method.length
