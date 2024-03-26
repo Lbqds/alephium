@@ -42,10 +42,10 @@ object ExternalMinerMock {
   }
 
   def props(config: AlephiumConfig, nodes: AVector[InetSocketAddress]): Props = {
-    require(
-      config.broker.groups % nodes.length == 0,
-      s"Invalid number of nodes ${nodes.length} for groups ${config.broker.groups}"
-    )
+//    require(
+//      config.broker.groups % nodes.length == 0,
+//      s"Invalid number of nodes ${nodes.length} for groups ${config.broker.groups}"
+//    )
 
     props(nodes)(
       config.broker,

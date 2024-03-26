@@ -30,6 +30,12 @@ object LaunchLocalCluster extends App with StrictLogging {
 
   val localClusterConfig: LocalClusterConfig = loadLocalClusterConfig()
 
+  val percentageOfNodesForMining: Double = localClusterConfig.percentageOfNodesForMining
+  if (percentageOfNodesForMining > 1 || percentageOfNodesForMining < 0) {
+    logger.error("The value for percentage-of-nodes-for-mining should be in [0, 1]")
+    System.exit(1)
+  }
+
   val localCluster: LocalCluster = new LocalCluster(
     localClusterConfig.numberOfNodes,
     localClusterConfig.singleNodeDiff,
@@ -54,7 +60,13 @@ object LaunchLocalCluster extends App with StrictLogging {
 
   val servers: Seq[Server] = bootstrapServer +: restOfServers
 
-  localCluster.startMiner(servers)
+  val numberOfMiningNodes: Int = (servers.length * percentageOfNodesForMining).toInt
+  if (numberOfMiningNodes == 0) {
+    logger.warn("No mining nodes")
+  } else {
+    logger.info(s"Start miner with ${numberOfMiningNodes} mining nodes")
+    localCluster.startMiner(servers.take(numberOfMiningNodes))
+  }
 
   Wallet.restoreWallets(servers)
 

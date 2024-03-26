@@ -81,11 +81,13 @@ class LocalCluster(
 
   def startMiner(servers: Seq[Server]): CpuSoloMiner = {
     assume(servers.length > 0)
-    val apiAddresses = servers.map { server =>
-      val hostAddr     = server.apiConfig.networkInterface.getHostAddress()
-      val minerApiPort = server.config.network.minerApiPort
-      s"$hostAddr:$minerApiPort"
-    }.mkString(",")
+    val apiAddresses = servers
+      .map { server =>
+        val hostAddr     = server.apiConfig.networkInterface.getHostAddress()
+        val minerApiPort = server.config.network.minerApiPort
+        s"$hostAddr:$minerApiPort"
+      }
+      .mkString(",")
     new CpuSoloMiner(servers(0).config, servers(0).flowSystem, Some(apiAddresses))
   }
 
@@ -249,7 +251,8 @@ object LocalCluster extends StrictLogging {
   final case class LocalClusterConfig(
       numberOfNodes: Int,
       singleNodeDiff: Int,
-      ghostHardForkTimestamp: TimeStamp
+      ghostHardForkTimestamp: TimeStamp,
+      percentageOfNodesForMining: Double
   )
 
   object LocalClusterConfig {
@@ -257,7 +260,8 @@ object LocalCluster extends StrictLogging {
       LocalClusterConfig(
         config.getInt("number-of-nodes"),
         config.getInt("single-node-diff"),
-        timeStampReader.read(config, "ghost-hard-fork-timestamp")
+        timeStampReader.read(config, "ghost-hard-fork-timestamp"),
+        config.getDouble("percentage-of-nodes-for-mining")
       )
     }
   }
@@ -276,6 +280,7 @@ object LocalCluster extends StrictLogging {
       s"""number-of-nodes = 3
          |single-node-diff = 17
          |ghost-hard-fork-timestamp = ${TimeStamp.now().plusHoursUnsafe(1).millis}
+         |percentage-of-nodes-for-mining = 1
       """.stripMargin
     val defaultConfig = ConfigFactory.parseString(defaultConfigStr)
 
