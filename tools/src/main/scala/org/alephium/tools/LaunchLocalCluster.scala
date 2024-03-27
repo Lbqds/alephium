@@ -16,11 +16,17 @@
 
 package org.alephium.tools
 
-import scala.concurrent.ExecutionContext
+import java.util.concurrent.TimeUnit
 
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success}
+
+import akka.pattern.ask
+import akka.util.Timeout
 import com.typesafe.scalalogging.StrictLogging
 
 import org.alephium.app.{LocalCluster, Server}
+import org.alephium.flow.network.InterCliqueManager
 import org.alephium.protocol.config.GroupConfig
 
 // scalastyle:off magic.number
@@ -60,16 +66,34 @@ object LaunchLocalCluster extends App with StrictLogging {
 
   val servers: Seq[Server] = bootstrapServer +: restOfServers
 
-  val numberOfMiningNodes: Int = (servers.length * percentageOfNodesForMining).toInt
-  if (numberOfMiningNodes == 0) {
-    logger.warn("No mining nodes")
-  } else {
-    logger.info(s"Start miner with ${numberOfMiningNodes} mining nodes")
-    localCluster.startMiner(servers.take(numberOfMiningNodes))
+  @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
+  private def checkSyncedAndStart(): Unit = {
+    implicit val timeout: Timeout = Timeout(5, TimeUnit.SECONDS)
+    val futures = servers.map { server =>
+      server.node.allHandlers.viewHandler.ref
+        .ask(InterCliqueManager.IsSynced)
+        .mapTo[InterCliqueManager.SyncedResult]
+    }
+    Future.sequence(futures).onComplete {
+      case Success(results) if results.forall(_.isSynced) =>
+        logger.info("All nodes synced now")
+        val numberOfMiningNodes: Int = (servers.length * percentageOfNodesForMining).toInt
+        if (numberOfMiningNodes == 0) {
+          logger.warn("No mining nodes")
+        } else {
+          logger.info(s"Start miner with ${numberOfMiningNodes} mining nodes")
+          localCluster.startMiner(servers.take(numberOfMiningNodes))
+        }
+
+        Wallet.restoreWallets(servers)
+        new TransferSimutation(servers).simulate()
+      case Failure(error) => throw error
+      case _ =>
+        Thread.sleep(1000)
+        checkSyncedAndStart()
+    }
   }
 
-  Wallet.restoreWallets(servers)
-
-  new TransferSimutation(servers).simulate()
+  checkSyncedAndStart()
 }
 // scalastyle:on magic.number
