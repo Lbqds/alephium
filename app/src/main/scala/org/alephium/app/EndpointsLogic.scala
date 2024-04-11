@@ -639,12 +639,9 @@ trait EndpointsLogic extends Endpoints {
   val targetToHashrateLogic = serverLogic(targetToHashrate) { targetToHashrate =>
     Future.successful(
       try {
-        val now = TimeStamp.now()
+        val consensusConfig = consensusConfigs.getConsensusConfig(TimeStamp.now())
         val hashrate =
-          HashRate.from(
-            Target.unsafe(targetToHashrate.target),
-            consensusConfigs.getConsensusConfig(now).blockTargetTime
-          )
+          HashRate.from(Target.unsafe(targetToHashrate.target), consensusConfig.blockTargetTime)
         Right(TargetToHashrate.Result(hashrate.value))
       } catch {
         case _: Throwable =>

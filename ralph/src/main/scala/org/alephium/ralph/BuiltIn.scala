@@ -93,7 +93,7 @@ object BuiltIn {
       returnType: Seq[Type],
       instrs: Seq[Instr[Ctx]],
       usePreapprovedAssets: Boolean,
-      useAssetsInContract: Boolean,
+      useAssetsInContract: Ast.ContractAssetsAnnotation,
       category: Category,
       argsCommentedName: Seq[(String, String)],
       retComment: String,
@@ -126,7 +126,7 @@ object BuiltIn {
           retComment: String,
           doc: String,
           usePreapprovedAssets: Boolean = false,
-          useAssetsInContract: Boolean = false
+          useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
       ): SimpleBuiltIn[Ctx] =
         SimpleBuiltIn(
           name,
@@ -151,7 +151,7 @@ object BuiltIn {
           argsName: Seq[(String, String)],
           retComment: String,
           usePreapprovedAssets: Boolean = false,
-          useAssetsInContract: Boolean = false
+          useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
       ): SimpleBuiltIn[Ctx] =
         SimpleBuiltIn(
           name,
@@ -176,7 +176,7 @@ object BuiltIn {
           argsName: Seq[(String, String)],
           retComment: String,
           usePreapprovedAssets: Boolean = false,
-          useAssetsInContract: Boolean = false
+          useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
       ): SimpleBuiltIn[Ctx] =
         SimpleBuiltIn(
           name,
@@ -242,7 +242,7 @@ object BuiltIn {
       signature: String,
       doc: String,
       usePreapprovedAssets: Boolean,
-      useAssetsInContract: Boolean
+      useAssetsInContract: Ast.ContractAssetsAnnotation
   ) extends BuiltIn[Ctx]
       with DocUtils {
     override def getReturnType[C <: Ctx](
@@ -279,7 +279,7 @@ object BuiltIn {
         argsName: Seq[(String, String)],
         doc: String,
         usePreapprovedAssets: Boolean,
-        useAssetsInContract: Boolean
+        useAssetsInContract: Ast.ContractAssetsAnnotation
     ): OverloadedSimpleBuiltIn[StatefulContext] = {
       val signature: String = {
         val args =
@@ -305,8 +305,8 @@ object BuiltIn {
 
   sealed abstract class GenericStatelessBuiltIn(val name: String)
       extends BuiltIn[StatelessContext] {
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
   }
 
   val blake2b: SimpleBuiltIn[StatelessContext] =
@@ -661,10 +661,10 @@ object BuiltIn {
   val encodeToByteVec: BuiltIn[StatelessContext] = new BuiltIn[StatelessContext] {
     val name: String = "encodeToByteVec"
 
-    def category: Category            = Category.ByteVec
-    override def isVariadic: Boolean  = true
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def category: Category                                = Category.ByteVec
+    override def isVariadic: Boolean                      = true
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
     def getReturnType[C <: StatelessContext](
         inputType: Seq[Type],
@@ -893,7 +893,7 @@ object BuiltIn {
       ByteVecSlice
     ),
     usePreapprovedAssets = false,
-    useAssetsInContract = false,
+    useAssetsInContract = Ast.NotUseContractAssets,
     category = Category.Conversion,
     argsCommentedName = Seq("contractAddress" -> "the input contract address"),
     retComment = "a contract id",
@@ -911,10 +911,10 @@ object BuiltIn {
     )
 
   val panic: BuiltIn[StatelessContext] = new BuiltIn[StatelessContext] {
-    val name: String                  = "panic"
-    def category: Category            = Category.Utils
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    val name: String                                      = "panic"
+    def category: Category                                = Category.Utils
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
     override def getReturnType[C <: StatelessContext](
         inputType: Seq[Type],
         state: Compiler.State[C]
@@ -1136,7 +1136,7 @@ object BuiltIn {
       Seq[Type](Type.Address, Type.ByteVec, Type.U256),
       Seq.empty,
       TransferTokenFromSelf,
-      useAssetsInContract = true,
+      useAssetsInContract = Ast.UseContractAssets,
       argsName = Seq(
         "toAddress" -> "the address to transfer token to",
         "tokenId"   -> "the token to be transferred",
@@ -1152,7 +1152,7 @@ object BuiltIn {
       Seq[Type](Type.Address, Type.ByteVec, Type.U256),
       Seq.empty,
       TransferTokenToSelf,
-      useAssetsInContract = true,
+      useAssetsInContract = Ast.UseContractAssets,
       argsName = Seq(
         "fromAddress" -> "the address to transfer token from",
         "tokenId"     -> "the token to be transferred",
@@ -1236,7 +1236,7 @@ object BuiltIn {
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.Contract,
       argsName = Seq(
         "bytecode"         -> "the bytecode of the contract to be created",
@@ -1283,7 +1283,7 @@ object BuiltIn {
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.Contract,
       argsName = Seq(
         "contractId"       -> "the id of the contract to be copied",
@@ -1338,7 +1338,7 @@ object BuiltIn {
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.SubContract,
       argsName = Seq(
         "subContractPath"  -> "the path of the sub-contract to be created",
@@ -1394,7 +1394,7 @@ object BuiltIn {
       ),
       Seq[Type](Type.ByteVec),
       usePreapprovedAssets = true,
-      useAssetsInContract = false,
+      useAssetsInContract = Ast.NotUseContractAssets,
       category = Category.SubContract,
       argsName = Seq(
         "subContractPath"  -> "the path of the sub-contract to be created",
@@ -1417,7 +1417,7 @@ object BuiltIn {
       Seq[Type](Type.Address),
       Seq.empty,
       DestroySelf,
-      useAssetsInContract = true,
+      useAssetsInContract = Ast.UseContractAssets,
       argsName =
         Seq("refundAddress" -> "the address to receive the remaining assets in the contract"),
       retComment = "",
@@ -1566,13 +1566,15 @@ object BuiltIn {
   val payGasFee: SimpleBuiltIn[StatefulContext] =
     SimpleBuiltIn.asset(
       "payGasFee",
-      Seq.empty,
+      Seq[Type](Type.Address, Type.U256),
       Seq.empty,
       PayGasFee,
-      argsName = Seq.empty,
+      argsName = Seq(
+        "payer"  -> "payer of the gas",
+        "amount" -> "the amount of gas to be paid in ALPH"
+      ),
       retComment = "",
-      doc = "Pay gas fee.",
-      usePreapprovedAssets = true
+      doc = "Pay gas fee."
     )
 
   val minimalContractDeposit: SimpleBuiltIn[StatefulContext] =
@@ -1599,9 +1601,9 @@ object BuiltIn {
 
   sealed abstract private class SubContractBuiltIn extends BuiltIn[StatefulContext] with DocUtils {
     def name: String
-    def category: Category            = Category.SubContract
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def category: Category                                = Category.SubContract
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
     def returnType(selfContractType: Type): Seq[Type] = Seq(Type.ByteVec)
 
@@ -1712,7 +1714,7 @@ object BuiltIn {
 
       def signature: String             = s"fn $name!(contract:<Contract>) -> (ByteVec)"
       def usePreapprovedAssets: Boolean = false
-      def useAssetsInContract: Boolean  = false
+      def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
       def returnType(selfContractType: Type): Seq[Type] = Seq(Type.ByteVec)
 
@@ -1747,9 +1749,9 @@ object BuiltIn {
     val name: String       = "selfContract"
     val category: Category = Category.Contract
 
-    def signature: String             = s"fn $name!() -> (<Contract>)"
-    def usePreapprovedAssets: Boolean = false
-    def useAssetsInContract: Boolean  = false
+    def signature: String                                 = s"fn $name!() -> (<Contract>)"
+    def usePreapprovedAssets: Boolean                     = false
+    def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
     def returnType(selfContractType: Type): Seq[Type] = Seq(selfContractType)
     def getReturnType[C <: StatefulContext](
@@ -1775,7 +1777,7 @@ object BuiltIn {
 
       def signature: String             = s"fn contractAddress!(contract:<Contract>) -> (Address)"
       def usePreapprovedAssets: Boolean = false
-      def useAssetsInContract: Boolean  = false
+      def useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
 
       def returnType(selfContractType: Type): Seq[Type] = Seq(Type.Address)
 
@@ -1855,10 +1857,10 @@ object BuiltIn {
   val statefulFuncs: Map[String, BuiltIn[StatefulContext]] = statefulFuncsSeq.toMap
 
   trait ContractBuiltIn[Ctx <: StatelessContext] extends Compiler.ContractFunc[Ctx] {
-    val isPublic: Boolean             = true
-    val usePreapprovedAssets: Boolean = false
-    val useAssetsInContract: Boolean  = false
-    val useUpdateFields: Boolean      = false
+    val isPublic: Boolean                                 = true
+    val usePreapprovedAssets: Boolean                     = false
+    val useAssetsInContract: Ast.ContractAssetsAnnotation = Ast.NotUseContractAssets
+    val useUpdateFields: Boolean                          = false
 
     override def isStatic: Boolean = true
 

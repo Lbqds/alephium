@@ -2835,7 +2835,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |Contract Foo() {
          |  @using(assetsInContract = true)
          |  pub fn foo() -> () {
-         |    payGasFee!{selfAddress!() -> ALPH: txGasFee!()}()
+         |    payGasFee!(selfAddress!(), txGasFee!())
          |  }
          |}
          |""".stripMargin
@@ -2846,7 +2846,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |  @using(assetsInContract = true)
          |  pub fn foo(contractPay: Bool) -> () {
          |    if (contractPay) {
-         |      payGasFee!{selfAddress!() -> ALPH: txGasFee!()}()
+         |      payGasFee!(selfAddress!(), txGasFee!())
          |    }
          |  }
          |}
@@ -2934,7 +2934,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     def script =
       s"""
          |TxScript Main {
-         |  payGasFee!{callerAddress!() -> ALPH: txGasFee!()}()
+         |  payGasFee!(callerAddress!(), txGasFee!())
          |}
          |
          |""".stripMargin
@@ -2955,7 +2955,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     def script =
       s"""
          |TxScript Main {
-         |  payGasFee!{callerAddress!() -> ALPH: ${halfGasFee}}()
+         |  payGasFee!(callerAddress!(), ${halfGasFee})
          |}
          |
          |""".stripMargin
@@ -2976,9 +2976,9 @@ class ServerUtilsSpec extends AlephiumSpec {
     def script =
       s"""
          |TxScript Main {
-         |  payGasFee!{callerAddress!() -> ALPH: ${halfGasFee}}()
-         |  payGasFee!{callerAddress!() -> ALPH: ${halfGasFee}}()
-         |  payGasFee!{callerAddress!() -> ALPH: ${halfGasFee}}()
+         |  payGasFee!(callerAddress!(), ${halfGasFee})
+         |  payGasFee!(callerAddress!(), ${halfGasFee})
+         |  payGasFee!(callerAddress!(), ${halfGasFee})
          |}
          |
          |""".stripMargin
@@ -3045,7 +3045,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |  @using(assetsInContract = true)
          |  pub fn foo(contractPay: Bool) -> () {
          |    if (contractPay) {
-         |      payGasFee!{selfAddress!() -> ALPH: 0}()
+         |      payGasFee!(selfAddress!(), 0)
          |    }
          |  }
          |}
@@ -3085,7 +3085,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |  pub fn foo(contractPay: Bool) -> () {
          |    transferTokenFromSelf!(callerAddress!(), ALPH, 1 alph)
          |    if (contractPay) {
-         |      payGasFee!{selfAddress!() -> ALPH: 2}()
+         |      payGasFee!(selfAddress!(), 2)
          |    }
          |  }
          |}
@@ -3096,7 +3096,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     def script =
       s"""
          |TxScript Main {
-         |  payGasFee!{callerAddress!() -> ALPH: 100}()
+         |  payGasFee!(callerAddress!(), 100)
          |  Foo(#${contractAddress.toBase58}).foo(true)
          |}
          |
@@ -3124,7 +3124,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |Contract Bar() {
          |  @using(assetsInContract = true)
          |  pub fn bar() -> () {
-         |    payGasFee!{selfAddress!() -> ALPH: ${partialGasFee}}()
+         |    payGasFee!(selfAddress!(), ${partialGasFee})
          |  }
          |}
          |""".stripMargin
@@ -3138,7 +3138,7 @@ class ServerUtilsSpec extends AlephiumSpec {
          |  @using(assetsInContract = true)
          |  pub fn foo() -> () {
          |    transferTokenFromSelf!(callerAddress!(), ALPH, 1 alph)
-         |    payGasFee!{selfAddress!() -> ALPH: 0}()
+         |    payGasFee!(selfAddress!(), 0)
          |    Bar(#${barContractAddress.toBase58}).bar()
          |  }
          |}
@@ -3172,66 +3172,14 @@ class ServerUtilsSpec extends AlephiumSpec {
     checkAddressBalance(barContractAddress, ALPH.alph(1))
   }
 
-  it should "charge the contract that pays the for gas the first" in new GasFeeFixture {
-    def barContract: String =
-      s"""
-         |Contract Bar() {
-         |  @using(assetsInContract = true)
-         |  pub fn bar() -> () {
-         |    payGasFee!{selfAddress!() -> ALPH: txGasFee!()}()
-         |  }
-         |}
-         |""".stripMargin
-
-    val barContractAddress = deployContract(barContract, Amount(ALPH.alph(10)))
-
-    override def fooContract: String =
-      s"""
-         |Contract Foo() {
-         |  @using(assetsInContract = true)
-         |  pub fn foo() -> () {
-         |    Bar(#${barContractAddress.toBase58}).bar()
-         |    transferTokenFromSelf!(callerAddress!(), ALPH, 1 alph)
-         |    payGasFee!{selfAddress!() -> ALPH: txGasFee!()}()
-         |  }
-         |}
-         |
-         |$barContract
-         |""".stripMargin
-
-    val fooContractAddress = deployContract(fooContract, Amount(ALPH.alph(10)))
-
-    def script =
-      s"""
-         |TxScript Main {
-         |  Foo(#${fooContractAddress.toBase58}).foo()
-         |}
-         |
-         |$fooContract
-         |""".stripMargin
-
-    checkAddressBalance(scriptCaller, ALPH.alph(1000000))
-    checkAddressBalance(fooContractAddress, ALPH.alph(10))
-    checkAddressBalance(barContractAddress, ALPH.alph(10))
-
-    val scriptBlock    = executeScript(script)
-    val scriptTxGasFee = scriptBlock.nonCoinbase.head.gasFeeUnsafe
-
-    checkAddressBalance(scriptCaller, ALPH.alph(1000000).addUnsafe(ALPH.alph(1)))
-    checkAddressBalance(fooContractAddress, ALPH.alph(9))
-    checkAddressBalance(barContractAddress, ALPH.alph(10).subUnsafe(scriptTxGasFee))
-  }
-
   it should "split gas fee between contract and caller depending on approved token amount" in new GasFeeFixture {
     def contract: String =
       s"""
          |Contract Foo() {
          |  @using(preapprovedAssets = true, assetsInContract = true)
          |  pub fn foo() -> () {
-         |    payGasFee!{
-         |      selfAddress!()   -> ALPH: txGasFee!() / 2;
-         |      callerAddress!() -> ALPH: txGasFee!() / 2
-         |    }()
+         |    payGasFee!(selfAddress!(), txGasFee!() / 2)
+         |    payGasFee!(callerAddress!(), txGasFee!() / 2)
          |  }
          |}
          |""".stripMargin

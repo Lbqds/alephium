@@ -304,22 +304,26 @@ abstract class Parser[Ctx <: StatelessContext] {
     }
 
   @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
-  def parseType[Unknown: P](contractTypeCtor: Ast.TypeId => Type): P[Type] = {
+  def parseType[Unknown: P](contractTypeCtor: Ast.TypeId => Type.NamedType): P[Type] = {
     P(
-      Lexer.typeId.map(id => Lexer.primTpes.getOrElse(id.name, contractTypeCtor(id))) |
+      // Lexer.primTpes currently can't have source index as they are case objects
+      Lexer.typeId.map(id =>
+        Lexer.primTpes.getOrElse(id.name, contractTypeCtor(id).atSourceIndex(id.sourceIndex))
+      ) |
         arrayType(parseType(contractTypeCtor))
     )
   }
 
   // use by-name parameter because of https://github.com/com-lihaoyi/fastparse/pull/204
   def arrayType[Unknown: P](baseType: => P[Type]): P[Type] = {
-    P("[" ~ baseType ~ ";" ~ nonNegativeNum("array size") ~ "]").map { case (tpe, size) =>
-      Type.FixedSizeArray(tpe, size)
+    P(Index ~ "[" ~ baseType ~ ";" ~ nonNegativeNum("array size") ~ "]" ~~ Index).map {
+      case (from, tpe, size, to) =>
+        Type.FixedSizeArray(tpe, size).atSourceIndex(from, to, fileURI)
     }
   }
   def argument[Unknown: P](
       allowMutable: Boolean
-  )(contractTypeCtor: Ast.TypeId => Type): P[Ast.Argument] =
+  )(contractTypeCtor: Ast.TypeId => Type.NamedType): P[Ast.Argument] =
     P(Index ~ Lexer.unused ~ Lexer.mutMaybe(allowMutable) ~ Lexer.ident ~ ":").flatMap {
       case (fromIndex, isUnused, isMutable, ident) =>
         P(parseType(contractTypeCtor) ~~ Index).map { case (tpe, endIndex) =>
@@ -363,9 +367,10 @@ abstract class Parser[Ctx <: StatelessContext] {
             annotations,
             Parser.UsingAnnotationFields(
               preapprovedAssets = false,
-              assetsInContract = false,
+              assetsInContract = Ast.NotUseContractAssets,
               checkExternalCaller = true,
-              updateFields = false
+              updateFields = false,
+              methodIndex = None
             )
           )
           FuncDefTmp(
@@ -376,6 +381,7 @@ abstract class Parser[Ctx <: StatelessContext] {
             usingAnnotation.assetsInContract,
             usingAnnotation.checkExternalCaller,
             usingAnnotation.updateFields,
+            usingAnnotation.methodIndex,
             params,
             returnType,
             statements
@@ -383,6 +389,12 @@ abstract class Parser[Ctx <: StatelessContext] {
         }
     }
   def func[Unknown: P]: P[Ast.FuncDef[Ctx]] = funcTmp.map { f =>
+    if (f.useMethodIndex.nonEmpty) {
+      throw Compiler.Error(
+        "The `methodIndex` annotation can only be used for interface functions",
+        f.id.sourceIndex
+      )
+    }
     Ast
       .FuncDef(
         f.annotations,
@@ -392,6 +404,7 @@ abstract class Parser[Ctx <: StatelessContext] {
         f.useContractAssets,
         f.useCheckExternalCaller,
         f.useUpdateFields,
+        f.useMethodIndex,
         f.args,
         f.rtypes,
         f.body
@@ -516,6 +529,13 @@ abstract class Parser[Ctx <: StatelessContext] {
     }
   def struct[Unknown: P]: P[Ast.Struct] = P(Start ~ rawStruct ~ End)
 
+  def enforceUsingContractAssets[Unknown: P]: P[Ast.AnnotationField] =
+    P(Index ~ Parser.UsingAnnotation.useContractAssetsKey ~ "=" ~ "enforced" ~~ Index).map {
+      case (from, to) =>
+        Ast
+          .AnnotationField(Ast.Ident(Parser.UsingAnnotation.useContractAssetsKey), Val.Enforced)
+          .atSourceIndex(from, to, fileURI)
+    }
   def annotationField[Unknown: P]: P[Ast.AnnotationField] =
     P(Index ~ Lexer.ident ~ "=" ~ expr ~~ Index).map {
       case (fromIndex, ident, expr: Ast.Const[_], endIndex) =>
@@ -527,7 +547,7 @@ abstract class Parser[Ctx <: StatelessContext] {
         )
     }
   def annotationFields[Unknown: P]: P[Seq[Ast.AnnotationField]] =
-    P("(" ~ annotationField.rep(1, ",") ~ ")")
+    P("(" ~ (enforceUsingContractAssets | annotationField).rep(1, ",") ~ ")")
   def annotation[Unknown: P]: P[Ast.Annotation] =
     P(Index ~ "@" ~ Lexer.ident ~ annotationFields.? ~~ Index).map {
       case (fromIndex, id, fieldsOpt, endIndex) =>
@@ -542,9 +562,10 @@ final case class FuncDefTmp[Ctx <: StatelessContext](
     id: FuncId,
     isPublic: Boolean,
     usePreapprovedAssets: Boolean,
-    useContractAssets: Boolean,
+    useContractAssets: Ast.ContractAssetsAnnotation,
     useCheckExternalCaller: Boolean,
     useUpdateFields: Boolean,
+    useMethodIndex: Option[Int],
     args: Seq[Argument],
     rtypes: Seq[Type],
     body: Option[Seq[Statement[Ctx]]]
@@ -555,7 +576,7 @@ object Parser {
   sealed trait RalphAnnotation[T] {
     def id: String
     def keys: AVector[String]
-    def validate(annotations: Seq[Ast.Annotation]): Unit = {
+    def validate(annotations: Seq[Ast.Annotation]): Option[Annotation] = {
       annotations.find(_.id.name != id) match {
         case Some(annotation) =>
           throw Compiler.Error(
@@ -563,6 +584,25 @@ object Parser {
             annotation.sourceIndex
           )
         case None => ()
+      }
+      annotations.headOption match {
+        case result @ Some(annotation) =>
+          val duplicateKeys = keys.filter(key => annotation.fields.count(_.ident.name == key) > 1)
+          if (duplicateKeys.nonEmpty) {
+            throw Compiler.Error(
+              s"These keys are defined multiple times: ${duplicateKeys.mkString(",")}",
+              annotation.sourceIndex
+            )
+          }
+          val invalidKeys = annotation.fields.filter(f => !keys.contains(f.ident.name))
+          if (invalidKeys.nonEmpty) {
+            throw Compiler.Error(
+              s"Invalid keys for @$id annotation: ${invalidKeys.map(_.ident.name).mkString(",")}",
+              annotation.sourceIndex
+            )
+          }
+          result
+        case None => None
       }
     }
 
@@ -584,28 +624,17 @@ object Parser {
     }
 
     final def extractFields(annotations: Seq[Ast.Annotation], default: T): T = {
-      validate(annotations)
-      annotations.headOption match {
-        case Some(annotation) =>
-          val invalidKeys = annotation.fields.filter(f => !keys.contains(f.ident.name))
-          if (invalidKeys.nonEmpty) {
-            throw Compiler.Error(
-              s"Invalid keys for @$id annotation: ${invalidKeys.map(_.ident.name).mkString(",")}",
-              annotation.sourceIndex
-            )
-          }
-          extractFields(annotation, default)
-        case None => default
-      }
+      validate(annotations).map(extractFields(_, default)).getOrElse(default)
     }
     def extractFields(annotation: Ast.Annotation, default: T): T
   }
 
   final case class UsingAnnotationFields(
       preapprovedAssets: Boolean,
-      assetsInContract: Boolean,
+      assetsInContract: Ast.ContractAssetsAnnotation,
       checkExternalCaller: Boolean,
-      updateFields: Boolean
+      updateFields: Boolean,
+      methodIndex: Option[Int]
   )
 
   object UsingAnnotation extends RalphAnnotation[UsingAnnotationFields] {
@@ -614,26 +643,58 @@ object Parser {
     val useContractAssetsKey      = "assetsInContract"
     val useCheckExternalCallerKey = "checkExternalCaller"
     val useUpdateFieldsKey        = "updateFields"
+    val useMethodIndexKey         = "methodIndex"
     val keys: AVector[String] = AVector(
       usePreapprovedAssetsKey,
       useContractAssetsKey,
       useCheckExternalCallerKey,
-      useUpdateFieldsKey
+      useUpdateFieldsKey,
+      useMethodIndexKey
     )
+
+    private def extractUseContractAsset(annotation: Annotation): Ast.ContractAssetsAnnotation = {
+      annotation.fields.find(_.ident.name == useContractAssetsKey) match {
+        case Some(field @ Ast.AnnotationField(_, value)) =>
+          value match {
+            case Val.False    => Ast.NotUseContractAssets
+            case Val.True     => Ast.UseContractAssets
+            case Val.Enforced => Ast.EnforcedUseContractAssets
+            case _ =>
+              throw Compiler.Error(
+                "Invalid assetsInContract annotation, expected true/false/enforced",
+                field.sourceIndex
+              )
+          }
+        case None => Ast.NotUseContractAssets
+      }
+    }
 
     def extractFields(
         annotation: Ast.Annotation,
         default: UsingAnnotationFields
     ): UsingAnnotationFields = {
+      val methodIndex =
+        extractField[Val.U256](annotation, useMethodIndexKey, Val.U256).flatMap(_.v.toInt)
+      methodIndex match {
+        case Some(index) =>
+          if (index < 0 || index > 0xff) {
+            throw Compiler.Error(
+              s"Invalid method index $index, expecting a value in the range [0, 0xff]",
+              annotation.fields.find(_.ident.name == useMethodIndexKey).flatMap(_.sourceIndex)
+            )
+          }
+        case None => ()
+      }
       UsingAnnotationFields(
         extractField(annotation, usePreapprovedAssetsKey, Val.Bool(default.preapprovedAssets)).v,
-        extractField(annotation, useContractAssetsKey, Val.Bool(default.assetsInContract)).v,
+        extractUseContractAsset(annotation),
         extractField(
           annotation,
           useCheckExternalCallerKey,
           Val.Bool(default.checkExternalCaller)
         ).v,
-        extractField(annotation, useUpdateFieldsKey, Val.Bool(default.updateFields)).v
+        extractField(annotation, useUpdateFieldsKey, Val.Bool(default.updateFields)).v,
+        methodIndex
       )
     }
   }
@@ -830,9 +891,10 @@ class StatefulParser(val fileURI: Option[java.net.URI]) extends Parser[StatefulC
               annotations,
               Parser.UsingAnnotationFields(
                 preapprovedAssets = true,
-                assetsInContract = false,
+                assetsInContract = Ast.NotUseContractAssets,
                 checkExternalCaller = true,
-                updateFields = false
+                updateFields = false,
+                methodIndex = None
               )
             )
             val mainFunc = Ast.FuncDef.main(
@@ -853,8 +915,9 @@ class StatefulParser(val fileURI: Option[java.net.URI]) extends Parser[StatefulC
   def inheritanceFields[Unknown: P]: P[Seq[Ast.Ident]] =
     P("(" ~ Lexer.ident.rep(0, ",") ~ ")")
   def contractInheritance[Unknown: P]: P[Ast.ContractInheritance] =
-    P(Lexer.typeId ~ inheritanceFields).map { case (typeId, fields) =>
-      Ast.ContractInheritance(typeId, fields)
+    P(Index ~ Lexer.typeId ~ inheritanceFields ~~ Index).map {
+      case (startIndex, typeId, fields, endIndex) =>
+        Ast.ContractInheritance(typeId, fields).atSourceIndex(startIndex, endIndex, fileURI)
     }
 
   def interfaceImplementing[Unknown: P]: P[Seq[Ast.Inheritance]] =
@@ -1024,7 +1087,9 @@ class StatefulParser(val fileURI: Option[java.net.URI]) extends Parser[StatefulC
 
   @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
   def interfaceInheritance[Unknown: P]: P[Ast.InterfaceInheritance] =
-    P(Lexer.typeId).map(Ast.InterfaceInheritance)
+    P(Lexer.typeId).map(typeId =>
+      Ast.InterfaceInheritance(typeId).atSourceIndex(typeId.sourceIndex)
+    )
   def interfaceFunc[Unknown: P]: P[Ast.FuncDef[StatefulContext]] = {
     funcTmp.map { f =>
       f.body match {
@@ -1038,6 +1103,7 @@ class StatefulParser(val fileURI: Option[java.net.URI]) extends Parser[StatefulC
               f.useContractAssets,
               f.useCheckExternalCaller,
               f.useUpdateFields,
+              f.useMethodIndex,
               f.args,
               f.rtypes,
               None
@@ -1071,18 +1137,17 @@ class StatefulParser(val fileURI: Option[java.net.URI]) extends Parser[StatefulC
           s"No function definition in Interface ${typeId.name}",
           typeId.sourceIndex
         )
-      } else {
-        val stdIdOpt = Parser.InterfaceStdAnnotation.extractFields(annotations, None)
-        Ast
-          .ContractInterface(
-            stdIdOpt.map(stdId => Val.ByteVec(stdId.id)),
-            typeId,
-            funcs,
-            events,
-            inheritances.map { case (_, inher) => inher }.getOrElse(Seq.empty)
-          )
-          .atSourceIndex(fromIndex.index, endIndex, fileURI)
       }
+      val stdIdOpt = Parser.InterfaceStdAnnotation.extractFields(annotations, None)
+      Ast
+        .ContractInterface(
+          stdIdOpt.map(stdId => Val.ByteVec(stdId.id)),
+          typeId,
+          funcs,
+          events,
+          inheritances.map { case (_, inher) => inher }.getOrElse(Seq.empty)
+        )
+        .atSourceIndex(fromIndex.index, endIndex, fileURI)
     }
   def interface[Unknown: P]: P[Ast.ContractInterface] = P(Start ~ rawInterface ~ End)
 

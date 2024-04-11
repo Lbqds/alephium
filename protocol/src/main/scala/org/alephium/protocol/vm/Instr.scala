@@ -20,7 +20,6 @@ import java.math.BigInteger
 import java.nio.charset.StandardCharsets
 
 import scala.annotation.switch
-import scala.annotation.tailrec
 
 import akka.util.ByteString
 
@@ -36,7 +35,7 @@ import org.alephium.protocol.vm.TokenIssuance.{
   NoIssuance
 }
 import org.alephium.serde.{deserialize => decode, serialize => encode, _}
-import org.alephium.util.{AVector, Bytes, Duration, Math, TimeStamp, U256}
+import org.alephium.util.{AVector, Bytes, Duration, TimeStamp, U256}
 import org.alephium.util
 
 // scalastyle:off file.size.limit number.of.types
@@ -537,57 +536,39 @@ case object PayGasFee
     extends GhostInstrWithSimpleGas[StatefulContext]
     with GasBalance
     with StatefulInstrCompanion0 {
-  def gasFeeToBePaid[C <: StatefulContext](
+
+  def checkGasAmount[C <: StatefulContext](
       frame: Frame[C],
-      approved: MutBalances
-  ): AVector[(LockupScript, U256)] = {
-    val numOfGasPayers                                = approved.all.length
-    var gasFeeToBePaid: AVector[(LockupScript, U256)] = AVector.empty
-    val gasRemainingOpt = frame.ctx.txEnv.gasFeeUnsafe.sub(frame.ctx.gasFeePaid)
+      alphAmount: U256
+  ): ExeResult[Unit] = {
+    val gasFee     = frame.ctx.txEnv.gasFeeUnsafe
+    val gasFeePaid = frame.ctx.gasFeePaid
 
-    gasRemainingOpt match {
-      case None =>
-        gasFeeToBePaid
-      case Some(gasRemaining) =>
-        var remaining = gasRemaining
-        @tailrec
-        def iter(index: Int): Unit = {
-          if (index == numOfGasPayers || remaining.isZero) {
-            ()
-          } else {
-            val (lockupScript, balance) = approved.all(index)
-            val toBePaid                = Math.min(remaining, balance.attoAlphAmount)
-            gasFeeToBePaid = gasFeeToBePaid :+ (lockupScript, toBePaid)
-            remaining = remaining.subUnsafe(toBePaid)
-            iter(index + 1)
-          }
-        }
+    assume(gasFee >= gasFeePaid) // This should always be true, so we check with assume
 
-        iter(0)
-        gasFeeToBePaid
-    }
+    val gasRemainingToPay = gasFee.subUnsafe(gasFeePaid)
+    if (gasRemainingToPay < alphAmount) failed(GasOverPaid) else okay
   }
 
   def runWithGhost[C <: StatefulContext](frame: Frame[C]): ExeResult[Unit] = {
     for {
       balanceState <- frame.getBalanceState()
-      _ <- gasFeeToBePaid(frame, balanceState.approved).foreachE { case (lockupScript, gasFee) =>
-        for {
-          _ <- balanceState.approved
-            .subAlph(lockupScript, gasFee)
-            .toRight(
-              Right(
-                NotEnoughApprovedBalance(
-                  lockupScript,
-                  TokenId.alph,
-                  gasFee,
-                  balanceState.approved.getAttoAlphAmount(lockupScript).getOrElse(U256.Zero)
-                )
-              )
+      amount       <- frame.popOpStackU256()
+      payer        <- frame.popOpStackAddress().map(_.lockupScript)
+      _            <- checkGasAmount(frame, amount.v)
+      _ <- balanceState
+        .useAlph(payer, amount.v)
+        .toRight(
+          Right(
+            NotEnoughApprovedBalance(
+              payer,
+              TokenId.alph,
+              amount.v,
+              balanceState.remaining.getAttoAlphAmount(payer).getOrElse(U256.Zero)
             )
-          _ <- frame.ctx.payGasFee(gasFee)
-        } yield ()
-      }
+          )
+        )
+      _ <- frame.ctx.payGasFee(amount.v)
     } yield ()
   }
 }
