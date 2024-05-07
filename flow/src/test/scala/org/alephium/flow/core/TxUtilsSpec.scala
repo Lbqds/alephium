@@ -28,6 +28,7 @@ import org.alephium.flow.mempool.MemPool
 import org.alephium.flow.setting.AlephiumConfigFixture
 import org.alephium.flow.validation.TxValidation
 import org.alephium.protocol._
+import org.alephium.protocol.mining.Emission
 import org.alephium.protocol.model._
 import org.alephium.protocol.model.UnsignedTransaction.TxOutputInfo
 import org.alephium.protocol.vm._
@@ -162,7 +163,7 @@ class TxUtilsSpec extends AlephiumSpec {
       val tx        = block.nonCoinbase.head
       val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
       groupView.getPreOutput(tx.unsigned.inputs.head.outputRef) isE None
-      tx.assetOutputRefs.foreachWithIndex { case (outputRef, index) =>
+      tx.fixedOutputRefs.foreachWithIndex { case (outputRef, index) =>
         val output = tx.unsigned.fixedOutputs(index)
         if (output.toGroup equals chainIndex.from) {
           if (chainIndex.isIntraGroup) {
@@ -191,7 +192,7 @@ class TxUtilsSpec extends AlephiumSpec {
 
       {
         val groupView = blockFlow.getMutableGroupView(fromGroup).rightValue
-        tx.assetOutputRefs.foreach { outputRef =>
+        tx.fixedOutputRefs.foreach { outputRef =>
           groupView.getPreOutput(outputRef) isE None
         }
       }
@@ -199,7 +200,7 @@ class TxUtilsSpec extends AlephiumSpec {
       {
         val groupView = blockFlow.getMutableGroupViewIncludePool(fromGroup).rightValue
         groupView.getPreOutput(tx.unsigned.inputs.head.outputRef) isE None
-        tx.assetOutputRefs.foreachWithIndex { case (outputRef, index) =>
+        tx.fixedOutputRefs.foreachWithIndex { case (outputRef, index) =>
           val output = tx.unsigned.fixedOutputs(index)
           if (output.toGroup equals chainIndex.from) {
             groupView.getPreOutput(outputRef) isE Some(output)
@@ -952,7 +953,7 @@ class TxUtilsSpec extends AlephiumSpec {
   }
 
   it should "transfer with large amount of UTXOs with estimated gas" in new LargeUtxos {
-    val maxP2PKHInputsAllowedByGas = 151
+    val maxP2PKHInputsAllowedByGas = 256
 
     info("With provided Utxos")
 
@@ -961,7 +962,7 @@ class TxUtilsSpec extends AlephiumSpec {
       .rightValue
       .asUnsafe[AssetOutputInfo]
     val availableInputs = availableUtxos.map(_.ref)
-    val outputInfo = AVector(
+    val outputInfos = AVector.fill(255)(
       TxOutputInfo(
         output.lockupScript,
         ALPH.alph(1),
@@ -970,59 +971,35 @@ class TxUtilsSpec extends AlephiumSpec {
       )
     )
 
-    blockFlow
+    val tx0 = blockFlow
       .transfer(
         keyManager(output.lockupScript).publicKey,
         availableInputs.take(maxP2PKHInputsAllowedByGas),
-        outputInfo,
+        outputInfos,
         None,
         nonCoinbaseMinGasPrice
       )
       .rightValue
       .rightValue
-      .inputs
-      .length is maxP2PKHInputsAllowedByGas
-
-    blockFlow
-      .transfer(
-        keyManager(output.lockupScript).publicKey,
-        availableInputs.take(maxP2PKHInputsAllowedByGas + 1),
-        outputInfo,
-        None,
-        nonCoinbaseMinGasPrice
-      )
-      .rightValue
-      .leftValue is "Estimated gas GasBox(627120) too large, maximal GasBox(625000). Consider consolidating UTXOs using the sweep endpoints or sending to less addresses"
+    tx0.gasAmount is GasBox.unsafe(2192360)
+    tx0.inputs.length is maxP2PKHInputsAllowedByGas
+    tx0.fixedOutputs.length is 256
 
     info("Without provided Utxos")
 
-    blockFlow
+    val tx1 = blockFlow
       .transfer(
         keyManager(output.lockupScript).publicKey,
-        output.lockupScript,
-        None,
-        ALPH.alph(maxP2PKHInputsAllowedByGas.toLong - 1),
+        outputInfos,
         None,
         nonCoinbaseMinGasPrice,
         defaultUtxoLimit
       )
       .rightValue
       .rightValue
-      .inputs
-      .length is maxP2PKHInputsAllowedByGas
-
-    blockFlow
-      .transfer(
-        keyManager(output.lockupScript).publicKey,
-        output.lockupScript,
-        None,
-        ALPH.alph(maxP2PKHInputsAllowedByGas.toLong),
-        None,
-        nonCoinbaseMinGasPrice,
-        defaultUtxoLimit
-      )
-      .rightValue
-      .leftValue is "Estimated gas GasBox(627120) too large, maximal GasBox(625000). Consider consolidating UTXOs using the sweep endpoints or sending to less addresses"
+    tx1.gasAmount is GasBox.unsafe(2192360)
+    tx1.inputs.length is maxP2PKHInputsAllowedByGas
+    tx1.fixedOutputs.length is 256
   }
 
   it should "sweep as much as we can" in new LargeUtxos {
@@ -1764,6 +1741,93 @@ class TxUtilsSpec extends AlephiumSpec {
       inputs1,
       ALPH.oneAlph
     ).leftValue is "Too many inputs for the transfer, consider to reduce the amount to send, or use the `sweep-address` endpoint to consolidate the inputs first"
+  }
+
+  trait PoLWCoinbaseTxFixture extends FlowFixture with LockupScriptGenerators {
+    lazy val chainIndex                 = chainIndexGenForBroker(brokerConfig).sample.get
+    lazy val (privateKey, publicKey, _) = genesisKeys(chainIndex.from.value)
+
+    val polwReward: Emission.PoLW = Emission.PoLW(ALPH.alph(1), ALPH.cent(10))
+
+    def buildPoLWCoinbaseTx(uncleSize: Int, fromPublicKey: PublicKey = publicKey) = {
+      val uncles = (0 until uncleSize).map { _ =>
+        SelectedGhostUncle(model.BlockHash.random, assetLockupGen(chainIndex.to).sample.get, 1)
+      }
+      blockFlow
+        .polwCoinbase(
+          chainIndex,
+          fromPublicKey,
+          LockupScript.p2pkh(fromPublicKey),
+          AVector.from(uncles),
+          Emission.PoLW(ALPH.alph(1), ALPH.cent(10)),
+          U256.Zero,
+          TimeStamp.now(),
+          ByteString.empty
+        )
+        .rightValue
+        .rightValue
+    }
+  }
+
+  it should "use minimal gas fee for PoLW coinbase tx" in new PoLWCoinbaseTxFixture {
+    (0 until 2).foreach { uncleSize =>
+      val tx = buildPoLWCoinbaseTx(uncleSize)
+      tx.gasPrice is coinbaseGasPrice
+      tx.gasAmount is minimalGas
+    }
+  }
+
+  it should "not use minimal gas fee for PoLW coinbase tx" in new PoLWCoinbaseTxFixture {
+    val fromPublicKey = chainIndex.from.generateKey._2
+    (0 until 4).foreach { _ =>
+      val block = transfer(blockFlow, privateKey, fromPublicKey, ALPH.cent(3))
+      addAndCheck(blockFlow, block)
+    }
+    val tx = buildPoLWCoinbaseTx(2, fromPublicKey)
+    tx.gasPrice is coinbaseGasPrice
+    (tx.gasAmount > minimalGas) is true
+  }
+
+  it should "return error if there are tokens in PoLW coinbase input" in new PoLWCoinbaseTxFixture {
+    val lockupScript = LockupScript.p2pkh(publicKey)
+    val inputs = AVector(
+      input("input-0", ALPH.cent(10), lockupScript),
+      input("input-1", dustUtxoAmount, lockupScript, (TokenId.random, U256.One))
+    )
+    blockFlow
+      .polwCoinbase(
+        lockupScript,
+        UnlockScript.polw(publicKey),
+        AVector.empty,
+        ALPH.cent(10),
+        inputs.map(i => AssetOutputInfo(i._1, i._2, FlowUtils.PersistedOutput)),
+        minimalGas
+      )
+      .leftValue is "Not enough ALPH balance for PoLW input"
+  }
+
+  "PoLW change output amount" should "larger than dust amount" in new PoLWCoinbaseTxFixture {
+    val fromPublicKey = chainIndex.from.generateKey._2
+    val lockupScript  = LockupScript.p2pkh(fromPublicKey)
+    val amount        = polwReward.burntAmount.addUnsafe(coinbaseGasFeeSubsidy)
+    addAndCheck(blockFlow, transfer(blockFlow, privateKey, fromPublicKey, amount))
+    addAndCheck(blockFlow, transfer(blockFlow, privateKey, fromPublicKey, dustUtxoAmount))
+    val utxos = blockFlow.getUsableUtxos(None, lockupScript, Int.MaxValue).rightValue
+    utxos.length is 2
+    utxos.map(_.output.amount).toSet is Set(amount, dustUtxoAmount)
+
+    val tx = buildPoLWCoinbaseTx(0, fromPublicKey)
+    tx.inputs.length is 2
+    tx.inputs.toSet is utxos
+      .map(output => TxInput(output.ref, UnlockScript.polw(fromPublicKey)))
+      .toSet
+
+    tx.fixedOutputs.length is 2
+    tx.gasAmount is minimalGas
+    tx.fixedOutputs(0).amount is Coinbase
+      .calcMainChainReward(polwReward.netRewardUnsafe())
+      .addUnsafe(polwReward.burntAmount)
+    tx.fixedOutputs(1).amount is dustUtxoAmount.addUnsafe(coinbaseGasFeeSubsidy)
   }
 
   private def input(

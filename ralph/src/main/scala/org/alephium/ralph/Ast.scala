@@ -26,8 +26,8 @@ import akka.util.ByteString
 import org.alephium.protocol.vm
 import org.alephium.protocol.vm.{ALPHTokenId => ALPHTokenIdInstr, Contract => VmContract, _}
 import org.alephium.ralph.LogicalOperator.Not
-import org.alephium.ralph.Parser.UsingAnnotation
-import org.alephium.util.{AVector, Hex, I256, U256}
+import org.alephium.ralph.Parser.FunctionUsingAnnotation
+import org.alephium.util.{AVector, DjbHash, Hex, I256, U256}
 
 // scalastyle:off number.of.methods number.of.types file.size.limit
 object Ast {
@@ -96,8 +96,10 @@ object Ast {
     def signature: String = s"${ident.name}:${tpe.signature}"
   }
 
-  final case class AnnotationField(ident: Ident, value: Val)           extends Positioned
-  final case class Annotation(id: Ident, fields: Seq[AnnotationField]) extends Positioned
+  final case class AnnotationField[Ctx <: StatelessContext](ident: Ident, value: Const[Ctx])
+      extends Positioned
+  final case class Annotation[Ctx <: StatelessContext](id: Ident, fields: Seq[AnnotationField[Ctx]])
+      extends Positioned
 
   object FuncId {
     lazy val empty: FuncId = FuncId("", isBuiltIn = false)
@@ -207,6 +209,7 @@ object Ast {
     )
   }
   final case class Const[Ctx <: StatelessContext](v: Val) extends Expr[Ctx] {
+    def toConstInstr: Instr[StatelessContext]                    = v.toConstInstr
     override def _getType(state: Compiler.State[Ctx]): Seq[Type] = Seq(Type.fromVal(v.tpe))
 
     override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
@@ -825,17 +828,6 @@ object Ast {
     }
   }
 
-  final case class StringLiteral[Ctx <: StatelessContext](
-      string: Val.ByteVec
-  ) extends Expr[Ctx]
-      with Positioned {
-    def _getType(state: Compiler.State[Ctx]): Seq[Type] = Seq(Type.ByteVec)
-
-    def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
-      Seq(BytesConst(string))
-    }
-  }
-
   final case class StructField(ident: Ident, isMutable: Boolean, tpe: Type) extends UniqueDef {
     def name: String      = ident.name
     def signature: String = s"${ident.name}:${tpe.signature}"
@@ -884,16 +876,21 @@ object Ast {
     }
   }
 
-  final case class StructCtor[Ctx <: StatelessContext](id: TypeId, fields: Seq[(Ident, Expr[Ctx])])
-      extends Expr[Ctx] {
+  final case class StructCtor[Ctx <: StatelessContext](
+      id: TypeId,
+      fields: Seq[(Ident, Option[Expr[Ctx]])]
+  ) extends Expr[Ctx] {
     def _getType(state: Compiler.State[Ctx]): Seq[Type] = {
       val struct   = state.getStruct(id)
       val expected = struct.fields.map(field => (field.ident, Seq(state.resolveType(field.tpe))))
-      val have     = fields.map { case (ident, expr) => (ident, expr.getType(state)) }
+      val have = fields.map { case (ident, expr) =>
+        val tpe = expr.map(_.getType(state)).getOrElse(Seq(state.getVariable(ident).tpe))
+        (ident, tpe)
+      }
       if (expected.length != have.length || have.exists(f => !expected.contains(f))) {
         throw Compiler.Error(
           s"Invalid struct fields, expect ${struct.fields.map(_.signature)}",
-          id.sourceIndex
+          sourceIndex
         )
       }
       Seq(struct.tpe)
@@ -907,7 +904,10 @@ object Ast {
             throw Compiler.Error(s"Struct field ${field.ident} does not exist", id.sourceIndex)
           )
       }
-      sortedFields.flatMap(_._2.genCode(state))
+      sortedFields.flatMap {
+        case (_, Some(expr)) => expr.genCode(state)
+        case (field, None)   => state.genLoadCode(field)
+      }
     }
   }
 
@@ -1104,7 +1104,7 @@ object Ast {
   )
 
   final case class FuncDef[Ctx <: StatelessContext](
-      annotations: Seq[Annotation],
+      annotations: Seq[Annotation[Ctx]],
       id: FuncId,
       isPublic: Boolean,
       usePreapprovedAssets: Boolean,
@@ -1123,10 +1123,29 @@ object Ast {
 
     private var funcAccessedVarsCache: Option[Set[Compiler.AccessVariable]] = None
 
+    private[ralph] var methodSelector: Option[Method.Selector] = None
+    def getMethodSelector(globalState: GlobalState): Method.Selector = {
+      methodSelector match {
+        case Some(selector) => selector
+        case None =>
+          val argTypes = args.view
+            .flatMap(arg => globalState.flattenType(arg.tpe))
+            .map(_.signature)
+            .mkString(",")
+          val retTypes = rtypes.view.flatMap(globalState.flattenType).map(_.signature).mkString(",")
+          val bytes    = ByteString.fromString(s"$name($argTypes)->($retTypes)")
+          val selector = Method.Selector(DjbHash.intHash(bytes))
+          methodSelector = Some(selector)
+          selector
+      }
+    }
+
     def hasCheckExternalCallerAnnotation: Boolean = {
-      annotations.find(_.id.name == UsingAnnotation.id) match {
+      annotations.find(_.id.name == FunctionUsingAnnotation.id) match {
         case Some(usingAnnotation) =>
-          usingAnnotation.fields.exists(_.ident.name == UsingAnnotation.useCheckExternalCallerKey)
+          usingAnnotation.fields.exists(
+            _.ident.name == FunctionUsingAnnotation.useCheckExternalCallerKey
+          )
         case None => false
       }
     }
@@ -1144,7 +1163,7 @@ object Ast {
         || hasMigrateSimple)
     }
 
-    def signature: FuncSignature = FuncSignature(
+    lazy val signature: FuncSignature = FuncSignature(
       id,
       isPublic,
       usePreapprovedAssets,
@@ -1241,6 +1260,45 @@ object Ast {
         rtypes = Seq.empty,
         bodyOpt = Some(stmts)
       )
+    }
+  }
+
+  final case class StructFieldAlias(isMutable: Boolean, ident: Ident, alias: Option[Ident])
+
+  final case class StructDestruction[Ctx <: StatelessContext](
+      id: TypeId,
+      vars: Seq[StructFieldAlias],
+      expr: Expr[Ctx]
+  ) extends Statement[Ctx] {
+    def check(state: Compiler.State[Ctx]): Unit = {
+      val struct = expr.getType(state) match {
+        case Seq(tpe: Type.Struct) if tpe.id == id => state.getStruct(id)
+        case types =>
+          throw Compiler.Error(
+            s"Expected struct type ${quote(id.name)}, got ${quoteTypes(types)}",
+            expr.sourceIndex
+          )
+      }
+      vars.foreach { v =>
+        val fieldType = state.resolveType(struct.getField(v.ident).tpe)
+        val varIdent  = v.alias.getOrElse(v.ident)
+        state.addLocalVariable(
+          varIdent,
+          fieldType,
+          v.isMutable,
+          isUnused = false,
+          isGenerated = false
+        )
+      }
+    }
+    def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
+      val (structRef, instrs) = state.getOrCreateVariablesRef(expr)
+      instrs ++ vars.flatMap { v =>
+        val varIdent   = v.alias.getOrElse(v.ident)
+        val loadCodes  = structRef.genLoadCode(state, IdentSelector(v.ident))
+        val storeCodes = state.genStoreCode(varIdent).reverse.flatten
+        loadCodes ++ storeCodes
+      }
     }
   }
 
@@ -1388,14 +1446,19 @@ object Ast {
     }
   }
 
-  final case class ConstantVarDef(ident: Ident, value: Val) extends UniqueDef {
+  final case class ConstantVarDef[Ctx <: StatelessContext](
+      ident: Ident,
+      expr: Expr[Ctx]
+  ) extends UniqueDef {
     def name: String = ident.name
   }
 
-  final case class EnumField(ident: Ident, value: Val) extends UniqueDef {
+  final case class EnumField[Ctx <: StatelessContext](ident: Ident, value: Const[Ctx])
+      extends UniqueDef {
     def name: String = ident.name
   }
-  final case class EnumDef(id: TypeId, fields: Seq[EnumField]) extends UniqueDef {
+  final case class EnumDef[Ctx <: StatelessContext](id: TypeId, fields: Seq[EnumField[Ctx]])
+      extends UniqueDef {
     def name: String = id.name
   }
   object EnumDef {
@@ -1726,6 +1789,18 @@ object Ast {
       }
     }
 
+    @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
+    def flattenType(tpe: Type): Seq[Type] = {
+      resolveType(tpe) match {
+        case Type.Struct(id) =>
+          getStruct(id).fields.flatMap(field => flattenType(field.tpe))
+        case Type.FixedSizeArray(tpe, size) =>
+          val baseTypes = flattenType(tpe)
+          Seq.fill(size)(baseTypes).flatten
+        case tpe => Seq(tpe)
+      }
+    }
+
     def getStruct(typeId: Ast.TypeId): Ast.Struct = {
       structs.find(_.id == typeId) match {
         case Some(struct) => struct
@@ -1777,7 +1852,7 @@ object Ast {
           }
           var table = Compiler.SimpleFunc
             .from(funcs, isInterface)
-            .map(f => f.id -> f)
+            .map(f => f.funcDef.id -> f)
             .toMap[FuncId, Compiler.ContractFunc[Ctx]]
           builtInFuncs.foreach(func =>
             table = table + (FuncId(func.name, isBuiltIn = true) -> func)
@@ -1808,6 +1883,8 @@ object Ast {
       }
     }
 
+    protected def checkConstants(state: Compiler.State[Ctx]): Unit = {}
+
     private def checkAndAddFields(state: Compiler.State[Ctx]): Unit = {
       fields.foreach { field =>
         state.addFieldVariable(
@@ -1825,6 +1902,7 @@ object Ast {
       state.checkArguments(fields)
       addTemplateVars(state)
       checkAndAddFields(state)
+      checkConstants(state)
       funcs.foreach(_.check(state))
       state.checkUnusedMaps()
       state.checkUnusedFields()
@@ -1874,8 +1952,8 @@ object Ast {
     def fields: Seq[Argument]
     def maps: Seq[MapDef]
     def events: Seq[EventDef]
-    def constantVars: Seq[ConstantVarDef]
-    def enums: Seq[EnumDef]
+    def constantVars: Seq[ConstantVarDef[StatefulContext]]
+    def enums: Seq[EnumDef[StatefulContext]]
 
     def builtInContractFuncs(
         globalState: GlobalState
@@ -1900,9 +1978,9 @@ object Ast {
 
     def error(tpe: String): Compiler.Error =
       Compiler.Error(s"TxScript ${ident.name} should not contain any $tpe", sourceIndex)
-    def constantVars: Seq[ConstantVarDef] = throw error("constant variable")
-    def enums: Seq[EnumDef]               = throw error("enum")
-    def maps: Seq[MapDef]                 = throw error("map")
+    def constantVars: Seq[ConstantVarDef[StatefulContext]] = throw error("constant variable")
+    def enums: Seq[EnumDef[StatefulContext]]               = throw error("enum")
+    def maps: Seq[MapDef]                                  = throw error("map")
     def getTemplateVarsSignature(): String =
       s"TxScript ${name}(${templateVars.map(_.signature).mkString(",")})"
     def getTemplateVarsNames(): AVector[String] = AVector.from(templateVars.view.map(_.ident.name))
@@ -1965,8 +2043,8 @@ object Ast {
       funcs: Seq[FuncDef[StatefulContext]],
       maps: Seq[MapDef],
       events: Seq[EventDef],
-      constantVars: Seq[ConstantVarDef],
-      enums: Seq[EnumDef],
+      constantVars: Seq[ConstantVarDef[StatefulContext]],
+      enums: Seq[EnumDef[StatefulContext]],
       inheritances: Seq[Inheritance]
   ) extends ContractWithState {
     lazy val hasStdIdField: Boolean = stdIdEnabled.exists(identity) && stdInterfaceId.nonEmpty
@@ -1996,19 +2074,26 @@ object Ast {
     @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
     def getFuncUnsafe(funcId: FuncId): FuncDef[StatefulContext] = funcs.find(_.id == funcId).get
 
-    private def checkConstants(state: Compiler.State[StatefulContext]): Unit = {
+    private var calculatedConstants: Option[Seq[(Ident, Val)]] = None
+    def getCalculatedConstants(): Seq[(Ident, Val)] = calculatedConstants.getOrElse(Seq.empty)
+
+    override def checkConstants(state: Compiler.State[StatefulContext]): Unit = {
       UniqueDef.checkDuplicates(constantVars, "constant variables")
-      constantVars.foreach(v =>
-        state.addConstantVariable(v.ident, Type.fromVal(v.value.tpe), Seq(v.value.toConstInstr))
-      )
+      val constants = constantVars.map { v =>
+        v.expr.getType(state) match {
+          case Seq(tpe) if Type.primitives.contains(tpe) =>
+            val value = Compiler.State.calcConstant(state, v.expr)
+            state.addConstantVariable(v.ident, value)
+            v.ident -> value
+          case _ =>
+            Compiler.State.throwConstantVarDefException(v.expr)
+        }
+      }
+      if (constants.nonEmpty) calculatedConstants = Some(constants)
       UniqueDef.checkDuplicates(enums, "enums")
       enums.foreach(e =>
         e.fields.foreach(field =>
-          state.addConstantVariable(
-            EnumDef.fieldIdent(e.id, field.ident),
-            Type.fromVal(field.value.tpe),
-            Seq(field.value.toConstInstr)
-          )
+          state.addConstantVariable(EnumDef.fieldIdent(e.id, field.ident), field.value.v)
         )
       )
     }
@@ -2023,6 +2108,19 @@ object Ast {
       }
     }
 
+    private def checkFields(state: Compiler.State[StatefulContext]): Unit = {
+      fields.foreach { case Argument(fieldId, tpe, isFieldMutable, _) =>
+        state.resolveType(tpe) match {
+          case Type.Struct(structId) =>
+            val isStructImmutable = state.flattenTypeMutability(tpe, isMutable = true).forall(!_)
+            if (isFieldMutable && isStructImmutable) {
+              state.warningMutableStructField(ident, fieldId, structId)
+            }
+          case _ => ()
+        }
+      }
+    }
+
     private def checkMaps(state: Compiler.State[StatefulContext]): Unit = {
       UniqueDef.checkDuplicates(maps, "maps")
       maps.view.zipWithIndex.foreach { case (m, index) =>
@@ -2033,11 +2131,26 @@ object Ast {
 
     override def check(state: Compiler.State[StatefulContext]): Unit = {
       state.setCheckPhase()
+      checkFields(state)
       checkMaps(state)
       checkFuncs()
-      checkConstants(state)
       checkInheritances(state)
       super.check(state)
+    }
+
+    override def genMethods(
+        state: Compiler.State[StatefulContext]
+    ): AVector[Method[StatefulContext]] = {
+      AVector.from(funcs.view.map { func =>
+        val method = func.genMethod(state)
+        if (func.isPublic && state.isUseMethodSelector(ident, func.id)) {
+          val methodSelector      = func.getMethodSelector(state.globalState)
+          val methodSelectorInstr = MethodSelector(methodSelector)
+          method.copy(instrs = methodSelectorInstr +: method.instrs)
+        } else {
+          method
+        }
+      })
     }
 
     def genCode(state: Compiler.State[StatefulContext]): StatefulContract = {
@@ -2089,6 +2202,7 @@ object Ast {
 
   final case class ContractInterface(
       stdId: Option[StdInterfaceId],
+      useMethodSelector: Boolean,
       ident: TypeId,
       funcs: Seq[FuncDef[StatefulContext]],
       events: Seq[EventDef],
@@ -2100,13 +2214,13 @@ object Ast {
         sourceIndex
       )
 
-    def templateVars: Seq[Argument]       = throw error("template variable")
-    def fields: Seq[Argument]             = throw error("field")
-    def maps: Seq[MapDef]                 = throw error("map")
-    def getFieldsSignature(): String      = throw error("field")
-    def getFieldTypes(): Seq[String]      = throw error("field")
-    def constantVars: Seq[ConstantVarDef] = throw error("constant variable")
-    def enums: Seq[EnumDef]               = throw error("enum")
+    def templateVars: Seq[Argument]                        = throw error("template variable")
+    def fields: Seq[Argument]                              = throw error("field")
+    def maps: Seq[MapDef]                                  = throw error("map")
+    def getFieldsSignature(): String                       = throw error("field")
+    def getFieldTypes(): Seq[String]                       = throw error("field")
+    def constantVars: Seq[ConstantVarDef[StatefulContext]] = throw error("constant variable")
+    def enums: Seq[EnumDef[StatefulContext]]               = throw error("enum")
 
     def genCode(state: Compiler.State[StatefulContext]): StatefulContract = {
       throw Compiler.Error(s"Interface ${quote(ident.name)} should not generate code", sourceIndex)
@@ -2116,7 +2230,8 @@ object Ast {
   final case class MultiContract(
       contracts: Seq[ContractWithState],
       structs: Seq[Struct],
-      dependencies: Option[Map[TypeId, Seq[TypeId]]]
+      dependencies: Option[Map[TypeId, Seq[TypeId]]],
+      methodSelectorTable: Option[Map[(TypeId, FuncId), Boolean]]
   ) extends Positioned {
     lazy val globalState = GlobalState(structs)
 
@@ -2217,13 +2332,14 @@ object Ast {
     def extendedContracts(): MultiContract = {
       UniqueDef.checkDuplicates(contracts ++ structs, "TxScript/Contract/Interface/Struct")
 
-      val parentsCache = buildDependencies()
+      val methodSelectorTable = mutable.Map.empty[(TypeId, Ast.FuncId), Boolean]
+      val parentsCache        = buildDependencies()
       val newContracts: Seq[ContractWithState] = contracts.map {
         case script: TxScript =>
           script.withTemplateVarDefs(globalState).atSourceIndex(script.sourceIndex)
         case c: Contract =>
           val (stdIdEnabled, stdId, funcs, maps, events, constantVars, enums) =
-            MultiContract.extractDefs(parentsCache, c)
+            MultiContract.extractContract(parentsCache, methodSelectorTable, c)
           Contract(
             Some(stdIdEnabled),
             stdId,
@@ -2239,13 +2355,13 @@ object Ast {
             c.inheritances
           ).atSourceIndex(c.sourceIndex)
         case i: ContractInterface =>
-          val (_, stdId, funcs, _, events, _, _) = MultiContract.extractDefs(parentsCache, i)
-          ContractInterface(stdId, i.ident, funcs, events, i.inheritances).atSourceIndex(
-            i.sourceIndex
-          )
+          val (stdId, funcs, events) =
+            MultiContract.extractInterface(parentsCache, methodSelectorTable, i)
+          ContractInterface(stdId, i.useMethodSelector, i.ident, funcs, events, i.inheritances)
+            .atSourceIndex(i.sourceIndex)
       }
       val dependencies = Map.from(parentsCache.map(p => (p._1, p._2.map(_.ident))))
-      MultiContract(newContracts, structs, Some(dependencies))
+      MultiContract(newContracts, structs, Some(dependencies), Some(methodSelectorTable.toMap))
     }
 
     def genStatefulScripts()(implicit compilerOptions: CompilerOptions): AVector[CompiledScript] = {
@@ -2417,34 +2533,71 @@ object Ast {
         .getOrElse(true)
     }
 
+    def extractInterface(
+        parentsCache: mutable.Map[TypeId, Seq[ContractWithState]],
+        methodSelectorTable: mutable.Map[(TypeId, FuncId), Boolean],
+        interface: ContractInterface
+    ): (Option[StdInterfaceId], Seq[FuncDef[StatefulContext]], Seq[EventDef]) = {
+      val parents = parentsCache(interface.ident).map {
+        case parent: ContractInterface => parent
+        case p =>
+          throw Compiler.Error(s"${p.ident.name} is not an interface", p.ident.sourceIndex)
+      }
+      if (!interface.useMethodSelector) {
+        parents.find(_.useMethodSelector) match {
+          case Some(parent) =>
+            throw Compiler.Error(
+              s"Interface ${interface.name} does not use method selector, but its parent ${parent.name} use method selector",
+              interface.ident.sourceIndex
+            )
+          case None => ()
+        }
+      }
+      val sortedInterfaces = sortInterfaces(parentsCache, parents :+ interface)
+      val stdId            = getStdId(sortedInterfaces)
+      val allFuncs = sortedInterfaces.flatMap { parentOrSelf =>
+        parentOrSelf.funcs.foreach(func =>
+          methodSelectorTable.update((interface.ident, func.id), parentOrSelf.useMethodSelector)
+        )
+        parentOrSelf.funcs
+      }
+      val (unimplementedFuncs, _) = checkFuncs(allFuncs)
+      // call the `checkFuncs` first to avoid duplicate function definition
+      checkInterfaceMethodIndex(sortedInterfaces)
+      val events = sortedInterfaces.flatMap(_.events)
+      (stdId, unimplementedFuncs, events)
+    }
+
     // scalastyle:off method.length
     @SuppressWarnings(Array("org.wartremover.warts.IsInstanceOf"))
-    def extractDefs(
+    def extractContract(
         parentsCache: mutable.Map[TypeId, Seq[ContractWithState]],
-        contract: ContractWithState
+        methodSelectorTable: mutable.Map[(TypeId, FuncId), Boolean],
+        contract: Contract
     ): (
         Boolean,
         Option[StdInterfaceId],
         Seq[FuncDef[StatefulContext]],
         Seq[MapDef],
         Seq[EventDef],
-        Seq[ConstantVarDef],
-        Seq[EnumDef]
+        Seq[ConstantVarDef[StatefulContext]],
+        Seq[EnumDef[StatefulContext]]
     ) = {
       val parents                       = parentsCache(contract.ident)
       val (allContracts, allInterfaces) = (parents :+ contract).partition(_.isInstanceOf[Contract])
-
       val sortedInterfaces =
         sortInterfaces(parentsCache, allInterfaces.map(_.asInstanceOf[ContractInterface]))
-
-      ensureChainedInterfaces(sortedInterfaces)
-
       val stdId        = getStdId(sortedInterfaces)
       val stdIdEnabled = getStdIdEnabled(allContracts.map(_.asInstanceOf[Contract]), contract.ident)
 
-      val allFuncs                             = (sortedInterfaces ++ allContracts).flatMap(_.funcs)
-      val (abstractFuncs, nonAbstractFuncs)    = allFuncs.partition(_.bodyOpt.isEmpty)
-      val (unimplementedFuncs, allUniqueFuncs) = checkFuncs(abstractFuncs, nonAbstractFuncs)
+      val interfaceFuncs = sortedInterfaces.flatMap { interface =>
+        interface.funcs.foreach(func =>
+          methodSelectorTable.update((contract.ident, func.id), interface.useMethodSelector)
+        )
+        interface.funcs
+      }
+      val allFuncs                             = interfaceFuncs ++ allContracts.flatMap(_.funcs)
+      val (unimplementedFuncs, allUniqueFuncs) = checkFuncs(allFuncs)
       val constantVars                         = allContracts.flatMap(_.constantVars)
       val enums                                = mergeEnums(allContracts.flatMap(_.enums))
 
@@ -2455,35 +2608,19 @@ object Ast {
       val maps           = allContracts.flatMap(_.maps)
       val events         = sortedInterfaces.flatMap(_.events) ++ contractEvents
 
-      val resultFuncs = contract match {
-        case txs: TxScript =>
-          throw Compiler.Error("Extract definitions from TxScript is unexpected", txs.sourceIndex)
-        case txContract: Contract =>
-          if (!txContract.isAbstract && unimplementedFuncs.nonEmpty) {
-            val methodNames = unimplementedFuncs.map(_.name).mkString(",")
-            throw Compiler.Error(
-              s"Contract ${txContract.name} has unimplemented methods: $methodNames",
-              txContract.sourceIndex
-            )
-          }
-          if (txContract.isAbstract) {
-            allUniqueFuncs
-          } else {
-            rearrangeFuncs(sortedInterfaces, allUniqueFuncs)
-          }
-
-        case interface: ContractInterface =>
-          if (nonAbstractFuncs.nonEmpty) {
-            val methodNames = nonAbstractFuncs.map(_.name).mkString(",")
-            throw Compiler.Error(
-              s"Interface ${interface.name} has implemented methods: $methodNames",
-              interface.sourceIndex
-            )
-          }
-          unimplementedFuncs
+      if (!contract.isAbstract && unimplementedFuncs.nonEmpty) {
+        val methodNames = unimplementedFuncs.map(_.name).mkString(",")
+        throw Compiler.Error(
+          s"Contract ${contract.name} has unimplemented methods: $methodNames",
+          contract.sourceIndex
+        )
       }
-
-      (stdIdEnabled, stdId, resultFuncs, maps, events, constantVars, enums)
+      val funcs = if (contract.isAbstract) {
+        allUniqueFuncs
+      } else {
+        rearrangeFuncs(sortedInterfaces, allUniqueFuncs)
+      }
+      (stdIdEnabled, stdId, funcs, maps, events, constantVars, enums)
     }
     // scalastyle:on method.length
 
@@ -2525,7 +2662,8 @@ object Ast {
         val child  = sortedInterfaces(1)
         if (!child.inheritances.exists(_.parentId.name == parent.ident.name)) {
           throw Compiler.Error(
-            s"Only single inheritance is allowed. Interface ${child.ident.name} does not inherit from ${parent.ident.name}",
+            s"Interface ${child.name} does not inherit from ${parent.name}, " +
+              s"please annotate ${child.name} with @using(methodSelector = true) annotation",
             child.sourceIndex
           )
         }
@@ -2571,21 +2709,29 @@ object Ast {
       }
     }
 
-    private def sortInterfaces(
+    private[ralph] def sortInterfaces(
         parentsCache: mutable.Map[TypeId, Seq[ContractWithState]],
-        allInterfaces: Seq[ContractInterface]
+        interfaces: Seq[ContractInterface]
     ): Seq[ContractInterface] = {
-      allInterfaces.sortBy(interface => parentsCache(interface.ident).length)
+      val (useMethodSelector, notUseMethodSelector) = interfaces.partition(_.useMethodSelector)
+      val chainedInterfaces =
+        notUseMethodSelector.sortBy(interface => parentsCache(interface.ident).length)
+      ensureChainedInterfaces(chainedInterfaces)
+      chainedInterfaces ++ useMethodSelector.sorted(
+        Ordering
+          .by[ContractInterface, Int](interface => parentsCache(interface.ident).length)
+          .orElse(Ordering.by[ContractInterface, String](_.name))
+      )
     }
 
-    def mergeEnums(enums: Seq[EnumDef]): Seq[EnumDef] = {
-      val mergedEnums = mutable.Map.empty[TypeId, mutable.ArrayBuffer[EnumField]]
+    def mergeEnums(enums: Seq[EnumDef[StatefulContext]]): Seq[EnumDef[StatefulContext]] = {
+      val mergedEnums = mutable.Map.empty[TypeId, mutable.ArrayBuffer[EnumField[StatefulContext]]]
       enums.foreach { enumDef =>
         mergedEnums.get(enumDef.id) match {
           case Some(fields) =>
             // enum fields will never be empty
-            val expectedType = enumDef.fields(0).value.tpe
-            val haveType     = fields(0).value.tpe
+            val expectedType = enumDef.fields(0).value.v.tpe
+            val haveType     = fields(0).value.v.tpe
             if (expectedType != haveType) {
               throw Compiler.Error(
                 s"There are different field types in the enum ${enumDef.id.name}: $expectedType,$haveType",
@@ -2607,11 +2753,11 @@ object Ast {
     }
 
     def checkFuncs(
-        abstractFuncs: Seq[FuncDef[StatefulContext]],
-        nonAbstractFuncs: Seq[FuncDef[StatefulContext]]
+        allFuncs: Seq[FuncDef[StatefulContext]]
     ): (Seq[FuncDef[StatefulContext]], Seq[FuncDef[StatefulContext]]) = {
-      val nonAbstractFuncSet = nonAbstractFuncs.view.map(f => f.id.name -> f).toMap
-      val abstractFuncsSet   = abstractFuncs.view.map(f => f.id.name -> f).toMap
+      val (abstractFuncs, nonAbstractFuncs) = allFuncs.partition(_.bodyOpt.isEmpty)
+      val nonAbstractFuncSet                = nonAbstractFuncs.view.map(f => f.id.name -> f).toMap
+      val abstractFuncsSet                  = abstractFuncs.view.map(f => f.id.name -> f).toMap
       if (nonAbstractFuncSet.size != nonAbstractFuncs.size) {
         val (duplicates, sourceIndex) = UniqueDef.duplicates(nonAbstractFuncs)
         throw Compiler.Error(

@@ -222,6 +222,7 @@ object Compiler {
     }
     final case class Constant[Ctx <: StatelessContext](
         tpe: Type,
+        value: Val,
         instrs: Seq[Instr[Ctx]]
     ) extends VarInfo {
       def isMutable: Boolean   = false
@@ -241,7 +242,7 @@ object Compiler {
     ): Seq[Instr[StatefulContext]] = ???
   }
   final case class SimpleFunc[Ctx <: StatelessContext](
-      id: Ast.FuncId,
+      funcDef: Ast.FuncDef[Ctx],
       isPublic: Boolean,
       usePreapprovedAssets: Boolean,
       useAssetsInContract: Ast.ContractAssetsAnnotation,
@@ -250,7 +251,7 @@ object Compiler {
       returnType: Seq[Type],
       index: Byte
   ) extends ContractFunc[Ctx] {
-    def name: String = id.name
+    def name: String = funcDef.name
 
     override def getReturnType[C <: Ctx](
         inputType: Seq[Type],
@@ -276,12 +277,22 @@ object Compiler {
         typeId: Ast.TypeId
     ): Seq[Instr[StatefulContext]] = {
       if (isPublic) {
+        val contractInfo = state.getContractInfo(typeId)
+        val callInstr: Instr[StatefulContext] =
+          if (
+            contractInfo.kind == ContractKind.Interface &&
+            state.isUseMethodSelector(typeId, funcDef.id)
+          ) {
+            CallExternalBySelector(funcDef.getMethodSelector(state.globalState))
+          } else {
+            CallExternal(index)
+          }
         val argLength = state.flattenTypeLength(argsType)
         val retLength = state.flattenTypeLength(returnType)
         Seq(
           ConstInstr.u256(Val.U256(U256.unsafe(argLength))),
           ConstInstr.u256(Val.U256(U256.unsafe(retLength)))
-        ) ++ objCodes :+ CallExternal(index)
+        ) ++ objCodes :+ callInstr
       } else {
         throw Error(s"Call external private function of ${typeId.name}", typeId.sourceIndex)
       }
@@ -293,7 +304,7 @@ object Compiler {
         index: Byte
     ): SimpleFunc[Ctx] = {
       new SimpleFunc[Ctx](
-        func.id,
+        func,
         func.isPublic,
         func.usePreapprovedAssets,
         func.useAssetsInContract,
@@ -318,9 +329,10 @@ object Compiler {
         isInterface: Boolean
     ): Seq[SimpleFunc[Ctx]] = {
       if (isInterface) {
-        val preDefinedIndexes = funcs.collect {
-          case Ast.FuncDef(_, _, _, _, _, _, _, _, Some(index), _, _, _) => index
-        }
+        val preDefinedIndexes = funcs.view
+          .map(_.useMethodIndex)
+          .collect { case Some(index) => index }
+          .toSeq
         var fromIndex: Int = 0
         funcs.map { func =>
           func.useMethodIndex match {
@@ -353,59 +365,73 @@ object Compiler {
   object State {
     private[ralph] val maxVarIndex: Int = 0xff
 
+    private[ralph] def throwConstantVarDefException[Ctx <: StatelessContext](
+        expr: Ast.Expr[Ctx]
+    ) = {
+      val label = expr match {
+        case _: Ast.CreateArrayExpr[_] => "arrays"
+        case _: Ast.StructCtor[_]      => "structs"
+        case _: Ast.ContractConv[_]    => "contract instances"
+        case _: Ast.Positioned         => "other expressions"
+      }
+      val primitiveTypes = Type.primitives.map(_.signature).mkString("/")
+      throw Error(
+        s"Expected constant value with primitive types $primitiveTypes, $label are not supported",
+        expr.sourceIndex
+      )
+    }
+
+    @scala.annotation.tailrec
+    def calcConstant[Ctx <: StatelessContext](
+        state: Compiler.State[Ctx],
+        expr: Ast.Expr[Ctx]
+    ): Val = {
+      expr match {
+        case e: Ast.Const[Ctx @unchecked] => e.v
+        case Ast.Variable(ident) =>
+          state.getConstant(ident).value
+        case Ast.ParenExpr(expr) => calcConstant(state, expr)
+        case expr: Ast.Binop[Ctx @unchecked] =>
+          calcBinOp(state, expr)
+        case expr: Ast.UnaryOp[Ctx @unchecked] =>
+          calcUnaryOp(state, expr)
+        case _ => throwConstantVarDefException(expr)
+      }
+    }
+
+    private def calcBinOp[Ctx <: StatelessContext](
+        state: Compiler.State[Ctx],
+        expr: Ast.Binop[Ctx]
+    ): Val = {
+      val left  = calcConstant(state, expr.left)
+      val right = calcConstant(state, expr.right)
+      expr.op.calc(Seq(left, right)) match {
+        case Right(value) => value
+        case Left(error)  => throw Error(error, expr.sourceIndex)
+      }
+    }
+
+    private def calcUnaryOp[Ctx <: StatelessContext](
+        state: Compiler.State[Ctx],
+        expr: Ast.UnaryOp[Ctx]
+    ): Val = {
+      val value = calcConstant(state, expr.expr)
+      expr.op.calc(Seq(value)) match {
+        case Right(value) => value
+        case Left(error)  => throw Error(error, expr.sourceIndex)
+      }
+    }
+
     // scalastyle:off cyclomatic.complexity method.length
     @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
     // we have checked the index type(U256)
     def getConstantIndex[Ctx <: StatelessContext](index: Ast.Expr[Ctx]): Ast.Expr[Ctx] = {
       index match {
         case e: Ast.Const[Ctx @unchecked] => e
-        case Ast.Binop(op: ArithOperator, Ast.Const(Val.U256(l)), Ast.Const(Val.U256(r))) =>
-          op match {
-            case ArithOperator.Add =>
-              Ast.Const(
-                Val.U256(
-                  l.add(r)
-                    .getOrElse(throw Error(s"Invalid array index ${index}", index.sourceIndex))
-                )
-              )
-            case ArithOperator.Sub =>
-              Ast.Const(
-                Val.U256(
-                  l.sub(r)
-                    .getOrElse(throw Error(s"Invalid array index ${index}", index.sourceIndex))
-                )
-              )
-            case ArithOperator.Mul =>
-              Ast.Const(
-                Val.U256(
-                  l.mul(r)
-                    .getOrElse(throw Error(s"Invalid array index ${index}", index.sourceIndex))
-                )
-              )
-            case ArithOperator.Div =>
-              Ast.Const(
-                Val.U256(
-                  l.div(r)
-                    .getOrElse(throw Error(s"Invalid array index ${index}", index.sourceIndex))
-                )
-              )
-            case ArithOperator.Mod =>
-              Ast.Const(
-                Val.U256(
-                  l.mod(r)
-                    .getOrElse(throw Error(s"Invalid array index ${index}", index.sourceIndex))
-                )
-              )
-            case ArithOperator.ModAdd => Ast.Const(Val.U256(l.modAdd(r)))
-            case ArithOperator.ModSub => Ast.Const(Val.U256(l.modSub(r)))
-            case ArithOperator.ModMul => Ast.Const(Val.U256(l.modMul(r)))
-            case ArithOperator.SHL    => Ast.Const(Val.U256(l.shl(r)))
-            case ArithOperator.SHR    => Ast.Const(Val.U256(l.shr(r)))
-            case ArithOperator.BitAnd => Ast.Const(Val.U256(l.bitAnd(r)))
-            case ArithOperator.BitOr  => Ast.Const(Val.U256(l.bitOr(r)))
-            case ArithOperator.Xor    => Ast.Const(Val.U256(l.xor(r)))
-            case _ =>
-              throw new RuntimeException("Dead branch") // https://github.com/scala/bug/issues/9677
+        case Ast.Binop(op: ArithOperator, Ast.Const(left: Val.U256), Ast.Const(right: Val.U256)) =>
+          op.calc(Seq(left, right)) match {
+            case Right(value) => Ast.Const(value)
+            case Left(_)      => throw Error(s"Invalid array index $index", index.sourceIndex)
           }
         case e @ Ast.Binop(op, left, right) =>
           val expr = Ast.Binop(op, getConstantIndex(left), getConstantIndex(right))
@@ -460,6 +486,7 @@ object Compiler {
         0,
         contract.funcTable(multiContract.globalState),
         contract.eventsInfo(),
+        multiContract.methodSelectorTable.getOrElse(Map.empty),
         multiContract.contractsTable,
         multiContract.globalState
       )
@@ -550,6 +577,10 @@ object Compiler {
     def addInterfaceFuncCall(funcId: Ast.FuncId): Unit = {
       hasInterfaceFuncCallSet.addOne(funcId)
     }
+
+    def methodSelectorTable: immutable.Map[(Ast.TypeId, Ast.FuncId), Boolean]
+    @inline def isUseMethodSelector(typeId: Ast.TypeId, funcId: Ast.FuncId): Boolean =
+      methodSelectorTable.getOrElse((typeId, funcId), true)
 
     def funcIdents: immutable.Map[Ast.FuncId, ContractFunc[Ctx]]
     def contractTable: immutable.Map[Ast.TypeId, ContractInfo[Ctx]]
@@ -736,9 +767,9 @@ object Compiler {
     }
     // scalastyle:on parameter.number
     // scalastyle:off method.length
-    def addConstantVariable(ident: Ast.Ident, tpe: Type, instrs: Seq[Instr[Ctx]]): Unit = {
+    def addConstantVariable(ident: Ast.Ident, value: Val): Unit = {
       val sname = checkNewVariable(ident)
-      varTable(sname) = VarInfo.Constant(tpe, instrs)
+      varTable(sname) = VarInfo.Constant(Type.fromVal(value.tpe), value, Seq(value.toConstInstr))
     }
 
     private def checkNewVariable(ident: Ast.Ident): String = {
@@ -755,6 +786,17 @@ object Compiler {
         throw Error(s"Number of variables more than ${State.maxVarIndex}", ident.sourceIndex)
       }
       sname
+    }
+
+    def getConstant(ident: Ast.Ident): VarInfo.Constant[Ctx] = {
+      getVariable(ident) match {
+        case v: VarInfo.Constant[Ctx @unchecked] => v
+        case _ =>
+          throw Error(
+            s"Constant variable ${ident.name} does not exist or is used before declaration",
+            ident.sourceIndex
+          )
+      }
     }
 
     def getVariable(ident: Ast.Ident, isWrite: Boolean = false): VarInfo = {
@@ -1091,6 +1133,8 @@ object Compiler {
       extends State[StatelessContext] {
     override def eventsInfo: Seq[EventInfo] = Seq.empty
 
+    def methodSelectorTable: Map[(Ast.TypeId, Ast.FuncId), Boolean] = ???
+
     def getBuiltInFunc(call: Ast.FuncId): BuiltIn.BuiltIn[StatelessContext] = {
       BuiltIn.statelessFuncs
         .getOrElse(
@@ -1176,6 +1220,7 @@ object Compiler {
       var varIndex: Int,
       funcIdents: immutable.Map[Ast.FuncId, ContractFunc[StatefulContext]],
       eventsInfo: Seq[EventInfo],
+      methodSelectorTable: immutable.Map[(Ast.TypeId, Ast.FuncId), Boolean],
       contractTable: immutable.Map[Ast.TypeId, ContractInfo[StatefulContext]],
       globalState: Ast.GlobalState
   )(implicit val compilerOptions: CompilerOptions)
