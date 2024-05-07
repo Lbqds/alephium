@@ -45,7 +45,7 @@ object LaunchLocalCluster extends App with StrictLogging {
   val localCluster: LocalCluster = new LocalCluster(
     localClusterConfig.numberOfNodes,
     localClusterConfig.singleNodeDiff,
-    localClusterConfig.ghostHardForkTimestamp
+    localClusterConfig.rhoneHardForkTimestamp
   )
 
   @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))
