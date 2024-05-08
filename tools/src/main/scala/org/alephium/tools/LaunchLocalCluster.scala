@@ -25,9 +25,10 @@ import akka.pattern.ask
 import akka.util.Timeout
 import com.typesafe.scalalogging.StrictLogging
 
-import org.alephium.app.{LocalCluster, Server}
+import org.alephium.app.Server
 import org.alephium.flow.network.InterCliqueManager
 import org.alephium.protocol.config.GroupConfig
+import org.alephium.util.{Duration, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
@@ -45,7 +46,7 @@ object LaunchLocalCluster extends App with StrictLogging {
   val localCluster: LocalCluster = new LocalCluster(
     localClusterConfig.numberOfNodes,
     localClusterConfig.singleNodeDiff,
-    localClusterConfig.rhoneHardForkTimestamp
+    TimeStamp.now() + Duration.from(localClusterConfig.rhoneHardForkActivationWindow).get
   )
 
   @SuppressWarnings(Array("org.wartremover.warts.GlobalExecutionContext"))

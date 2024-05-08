@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the library. If not, see <http://www.gnu.org/licenses/>.
 
-package org.alephium.app
+package org.alephium.tools
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardOpenOption}
@@ -30,13 +30,12 @@ import com.typesafe.scalalogging.StrictLogging
 import org.alephium.api.model.{Amount, Destination}
 import org.alephium.app.{ApiConfig, BootUp, CpuSoloMiner, Server}
 import org.alephium.crypto.wallet.Mnemonic
-import org.alephium.flow.setting.{AlephiumConfig, Configs, Platform}
-import org.alephium.flow.setting.ConfigUtils.timeStampReader
-import org.alephium.protocol.ALPH
+import org.alephium.flow.setting.{AlephiumConfig, Configs}
+import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model.{Address, GroupIndex}
 import org.alephium.protocol.vm.LockupScript
-import org.alephium.util.{AVector, Env, TimeStamp}
+import org.alephium.util.{AVector, Env, Files => AFiles, TimeStamp}
 
 class LocalCluster(
     numberOfNodes: Int,
@@ -55,9 +54,13 @@ class LocalCluster(
       bootStrapNodes: Seq[Server]
   ): Server = {
     try {
-      val rootPath: Path = Platform.getRootPath(Env.Test)
+      val rootPath: Path = AFiles.tmpDir.resolve(s".alephium-rhone-${Hash.random.shortHex}")
+      if (!Files.exists(rootPath)) {
+        rootPath.toFile.mkdir()
+      }
+
       val baseConfig: Config = Configs.parseConfig(
-        Env.Test,
+        Env.Prod,
         rootPath,
         overwrite = true,
         predefined = getConfig(publicPort, restPort, wsPort, minerApiPort, rootPath, bootStrapNodes)
@@ -80,7 +83,7 @@ class LocalCluster(
   }
 
   def startMiner(servers: Seq[Server]): CpuSoloMiner = {
-    assume(servers.length > 0)
+    assume(servers.nonEmpty)
     val apiAddresses = servers
       .map { server =>
         val hostAddr     = server.apiConfig.networkInterface.getHostAddress()
@@ -121,8 +124,9 @@ class LocalCluster(
          |]
          |
          |alephium.consensus.num-zeros-at-least-in-hash = $numZerosAtLeastInHash
-         |alephium.consensus.mainnet.uncle-dependency-gap-time = 0 seconds
+         |alephium.consensus.mainnet.uncle-dependency-gap-time = 16 seconds
          |alephium.consensus.mainnet.block-target-time = 64 seconds
+         |alephium.consensus.rhone.uncle-dependency-gap-time = 8 seconds
          |alephium.consensus.rhone.block-target-time = 16 seconds
          |
          |alephium.discovery.bootstrap = $bootStrapConfig
@@ -135,7 +139,7 @@ class LocalCluster(
          |alephium.api.network-interface = "127.0.0.1"
          |alephium.api.api-key-enabled = false
          |
-         |alephium.network.network-id = 4
+         |alephium.network.network-id = 3
          |alephium.network.rhone-hard-fork-timestamp = ${rhoneHardforkTimestamp.millis}
          |alephium.network.rest-port = $restPort
          |alephium.network.ws-port = $wsPort
@@ -251,7 +255,7 @@ object LocalCluster extends StrictLogging {
   final case class LocalClusterConfig(
       numberOfNodes: Int,
       singleNodeDiff: Int,
-      rhoneHardForkTimestamp: TimeStamp,
+      rhoneHardForkActivationWindow: java.time.Duration,
       percentageOfNodesForMining: Double
   )
 
@@ -260,7 +264,7 @@ object LocalCluster extends StrictLogging {
       LocalClusterConfig(
         config.getInt("number-of-nodes"),
         config.getInt("single-node-diff"),
-        timeStampReader.read(config, "rhone-hard-fork-timestamp"),
+        config.getDuration("rhone-hard-fork-activation-window"),
         config.getDouble("percentage-of-nodes-for-mining")
       )
     }
@@ -279,7 +283,7 @@ object LocalCluster extends StrictLogging {
     val defaultConfigStr =
       s"""number-of-nodes = 3
          |single-node-diff = 17
-         |rhone-hard-fork-timestamp = ${TimeStamp.now().plusHoursUnsafe(1).millis}
+         |rhone-hard-fork-activation-window = 1h
          |percentage-of-nodes-for-mining = 1
       """.stripMargin
     val defaultConfig = ConfigFactory.parseString(defaultConfigStr)
