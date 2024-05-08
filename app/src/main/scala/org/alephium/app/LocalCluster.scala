@@ -41,7 +41,7 @@ import org.alephium.util.{AVector, Env, TimeStamp}
 class LocalCluster(
     numberOfNodes: Int,
     singleNodeDiff: Int,
-    ghostHardforkTimestamp: TimeStamp
+    rhoneHardforkTimestamp: TimeStamp
 ) extends StrictLogging {
 
   import LocalCluster._
@@ -121,9 +121,9 @@ class LocalCluster(
          |]
          |
          |alephium.consensus.num-zeros-at-least-in-hash = $numZerosAtLeastInHash
-         |alephium.consensus.uncle-dependency-gap-time = 0 seconds
+         |alephium.consensus.mainnet.uncle-dependency-gap-time = 0 seconds
          |alephium.consensus.mainnet.block-target-time = 64 seconds
-         |alephium.consensus.ghost.block-target-time = 16 seconds
+         |alephium.consensus.rhone.block-target-time = 16 seconds
          |
          |alephium.discovery.bootstrap = $bootStrapConfig
          |alephium.discovery.max-clique-from-same-ip = ${numberOfNodes}
@@ -136,7 +136,7 @@ class LocalCluster(
          |alephium.api.api-key-enabled = false
          |
          |alephium.network.network-id = 4
-         |alephium.ghost-hard-fork-timestamp = ${ghostHardforkTimestamp.millis}
+         |alephium.network.rhone-hard-fork-timestamp = ${rhoneHardforkTimestamp.millis}
          |alephium.network.rest-port = $restPort
          |alephium.network.ws-port = $wsPort
          |alephium.network.miner-api-port = $minerApiPort
@@ -251,7 +251,7 @@ object LocalCluster extends StrictLogging {
   final case class LocalClusterConfig(
       numberOfNodes: Int,
       singleNodeDiff: Int,
-      ghostHardForkTimestamp: TimeStamp,
+      rhoneHardForkTimestamp: TimeStamp,
       percentageOfNodesForMining: Double
   )
 
@@ -260,7 +260,7 @@ object LocalCluster extends StrictLogging {
       LocalClusterConfig(
         config.getInt("number-of-nodes"),
         config.getInt("single-node-diff"),
-        timeStampReader.read(config, "ghost-hard-fork-timestamp"),
+        timeStampReader.read(config, "rhone-hard-fork-timestamp"),
         config.getDouble("percentage-of-nodes-for-mining")
       )
     }
@@ -279,7 +279,7 @@ object LocalCluster extends StrictLogging {
     val defaultConfigStr =
       s"""number-of-nodes = 3
          |single-node-diff = 17
-         |ghost-hard-fork-timestamp = ${TimeStamp.now().plusHoursUnsafe(1).millis}
+         |rhone-hard-fork-timestamp = ${TimeStamp.now().plusHoursUnsafe(1).millis}
          |percentage-of-nodes-for-mining = 1
       """.stripMargin
     val defaultConfig = ConfigFactory.parseString(defaultConfigStr)
