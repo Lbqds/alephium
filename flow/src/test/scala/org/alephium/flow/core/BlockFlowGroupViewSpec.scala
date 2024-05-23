@@ -27,15 +27,20 @@ import org.alephium.util.{AlephiumSpec, AVector, TimeStamp}
 
 class BlockFlowGroupViewSpec extends AlephiumSpec {
   it should "fetch preOutputs" in new FlowFixture {
+    val groupIndex = GroupIndex.unsafe(0)
     val blockFlow1 = isolatedBlockFlow()
     val block0     = transfer(blockFlow1, ChainIndex.unsafe(0, 1))
     addAndCheck(blockFlow1, block0)
+    blockFlow1.getBestDeps(groupIndex).deps.contains(block0.hash) is true
     val block1 = transfer(blockFlow1, ChainIndex.unsafe(0, 2))
     addAndCheck(blockFlow1, block1)
+    blockFlow1.getBestDeps(groupIndex).deps.contains(block1.hash) is true
     val block2 = transfer(blockFlow1, ChainIndex.unsafe(0, 1))
     addAndCheck(blockFlow1, block2)
+    blockFlow1.getBestDeps(groupIndex).deps.contains(block2.hash) is true
     val block3 = transfer(blockFlow1, ChainIndex.unsafe(0, 0))
     addAndCheck(blockFlow1, block3)
+    blockFlow1.getBestDeps(groupIndex).deps.contains(block3.hash) is true
 
     addAndCheck(blockFlow, block0)
 
