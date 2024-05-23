@@ -16,6 +16,8 @@
 
 package org.alephium.app
 
+import java.net.InetAddress
+
 import scala.collection.immutable.ArraySeq
 import scala.collection.mutable
 import scala.concurrent._
@@ -26,6 +28,7 @@ import com.typesafe.scalalogging.StrictLogging
 import io.vertx.core.Vertx
 import io.vertx.core.eventbus.{EventBus => VertxEventBus}
 import io.vertx.core.http.{HttpServer, HttpServerOptions}
+import org.pcap4j.core.{PcapNetworkInterface, Pcaps}
 import sttp.tapir.server.vertx.VertxFutureServerInterpreter._
 
 import org.alephium.api.ApiModelCodec
@@ -65,6 +68,9 @@ class WebSocketServer(node: Node, wsPort: Int)(implicit
   node.eventBus.tell(EventBus.Subscribe, eventHandler)
 
   server.webSocketHandler { webSocket =>
+    print(s"local: ${webSocket.localAddress().port()}, remote: ${webSocket.remoteAddress().port()}")
+    WebSocketServer.sniffing(webSocket.localAddress().port())
+    WebSocketServer.sniffing(webSocket.remoteAddress().port())
     webSocket.closeHandler(_ => eventHandler ! EventHandler.Unsubscribe(webSocket.textHandlerID()))
 
     if (!webSocket.path().equals("/events")) {
@@ -98,6 +104,25 @@ class WebSocketServer(node: Node, wsPort: Int)(implicit
 }
 
 object WebSocketServer {
+  def sniffing(port: Int): Unit = {
+    val thread = new Thread(() => {
+      val inetAddress = InetAddress.getByName("127.0.0.1")
+      val nif         = Pcaps.getDevByAddress(inetAddress)
+      val snapLen     = 65536
+      val mode        = PcapNetworkInterface.PromiscuousMode.PROMISCUOUS
+      val timeout     = 1000
+      val handle      = nif.openLive(snapLen, mode, timeout)
+
+      print(s"Sniffing on port $port...\n")
+      while (true) {
+        val packet = handle.getNextPacketEx
+        if (packet != null) {
+          print(s"Received packet on $port: $packet\n")
+        }
+      }
+    })
+    thread.start()
+  }
 
   def apply(node: Node)(implicit
       system: ActorSystem,
@@ -132,8 +157,10 @@ object WebSocketServer {
     def receive: Receive = {
       case event: EventBus.Event => handleEvent(event)
       case EventHandler.Subscribe(subscriber) =>
+        log.info(s"============ new subscriber: ${subscriber}")
         if (!subscribers.contains(subscriber)) { subscribers += subscriber }
       case EventHandler.Unsubscribe(subscriber) =>
+        log.info(s"============ subscriber unsubscribe: ${subscriber}")
         if (subscribers.contains(subscriber)) { subscribers -= subscriber }
       case EventHandler.ListSubscribers =>
         sender() ! AVector.unsafe(subscribers.toArray)
@@ -146,7 +173,12 @@ object WebSocketServer {
             case Right(blockEntry) =>
               val params       = writeJs(blockEntry)
               val notification = write(Notification("block_notify", params))
-              subscribers.foreach(subscriber => vertxEventBus.send(subscriber, notification))
+              subscribers.foreach(subscriber => {
+                log.info(
+                  s"============== received event in ws server $event, send to subscribers: $subscribers"
+                )
+                vertxEventBus.send(subscriber, notification)
+              })
             case _ => // this should never happen
               log.error(s"Received invalid block $block")
           }

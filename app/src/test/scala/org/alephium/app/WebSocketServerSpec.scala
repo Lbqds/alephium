@@ -36,6 +36,7 @@ import org.alephium.protocol.{Hash, PublicKey}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.LockupScript
 import org.alephium.rpc.model.JsonRPC._
+import org.alephium.serde.serialize
 import org.alephium.util._
 
 class WebSocketServerSpec
@@ -78,7 +79,10 @@ class WebSocketServerSpec
 
   it should "receive multiple events" in new RouteWS {
     checkWS {
-      (0 to 3).foreach { _ => sendEventAndCheck }
+      (0 to 3).foreach { index =>
+        print(s"============== index ${index}\n")
+        sendEventAndCheck
+      }
     }
   }
 
@@ -121,6 +125,7 @@ class WebSocketServerSpec
 
     val blockNotify = BlockNotify(blockGen.sample.get, height = 0)
     def sendEventAndCheck: Assertion = {
+      print(s"============ size: ${serialize(blockNotify.block).length}\n")
       node.eventBus ! blockNotify
 
       blockNotifyProbe.expectMsgPF() { case message: String =>
@@ -147,6 +152,7 @@ class WebSocketServerSpec
         .asScala
         .map { ws =>
           ws.textMessageHandler { blockNotify =>
+            print(s"=============== received notification in ws client: $blockNotify")
             blockNotifyProbe.ref ! blockNotify
           }
           ws

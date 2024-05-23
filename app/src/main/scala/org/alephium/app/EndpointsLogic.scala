@@ -706,7 +706,11 @@ trait EndpointsLogic extends Endpoints {
   val getContractEventsLogic = serverLogicRedirect(getContractEvents)(
     {
       case (contractAddress, counterRange, _) => {
+        print(s">>>>>>>>>>>>> received request ${contractAddress.toBase58}, ${counterRange}\n")
         Future.successful {
+          print(
+            s">>>>>>>>>>>>> start handling request ${contractAddress.toBase58}, ${counterRange}\n"
+          )
           serverUtils.getEventsByContractId(
             blockFlow,
             counterRange.start,
@@ -821,11 +825,14 @@ trait EndpointsLogic extends Endpoints {
       params: P
   ): Future[Either[ApiError[_ <: StatusCode], A]] =
     serverUtils.checkGroup(groupIndex) match {
-      case Right(_) => f
+      case Right(_) =>
+        print(s"======== handle in self ${groupIndex}, ${brokerConfig.brokerId}\n")
+        f
       case Left(_) =>
         uriFromGroup(groupIndex).flatMap {
           case Left(error) => Future.successful(Left(error))
           case Right(uri) =>
+            print(s"======== send to remote $uri\n")
             endpointSender.send(endpoint, params, uri)
         }
     }
@@ -838,6 +845,7 @@ trait EndpointsLogic extends Endpoints {
         val peer = nodes(brokerConfig.brokerIndex(fromGroup))
         Future.successful(Right(Uri(peer.address.getHostAddress, peer.restPort)))
       case None =>
+        print(s"================ no nodes, fetch self clique now\n")
         fetchSelfClique().map { selfCliqueEither =>
           for {
             selfClique <- selfCliqueEither

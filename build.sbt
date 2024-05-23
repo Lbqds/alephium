@@ -262,7 +262,8 @@ lazy val http = project("http")
       `tapir-vertx`,
       `tapir-client`,
       `tapir-files`,
-      `sttp-backend`
+      `sttp-backend`,
+      pcap4j
     )
   )
 

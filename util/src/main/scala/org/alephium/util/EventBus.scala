@@ -46,6 +46,9 @@ class EventBus() extends BaseActor with Subscriber {
 
   def receive: Receive = {
     case event: Event =>
+      print(
+        s">>>>>>>>>>>>> received event $event in event bus, send to subscribers now: $subscribers\n"
+      )
       subscribers.foreach { subscriber => subscriber ! event }
     case Subscribe =>
       val subscriber = sender()

@@ -65,4 +65,6 @@ object Dependencies {
   lazy val `prometheus-simple-client-hotspot` =
     "io.prometheus" % "simpleclient_hotspot" % Version.prometheus
   lazy val scopt = "com.github.scopt" %% "scopt" % "4.1.0"
+
+  lazy val pcap4j = "org.pcap4j" % "pcap4j-core" % "1.8.2"
 }

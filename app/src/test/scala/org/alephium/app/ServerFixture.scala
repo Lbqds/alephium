@@ -451,6 +451,7 @@ object ServerFixture {
       )
 
       if (shouldReturnEmptyEvents) {
+        print(s"=========== self broker id: ${brokerConfig.brokerId}, ${blockChainIndex.from}\n")
         Right((0, AVector.empty))
       } else {
         Right((2, AVector(logStates)))
