@@ -94,6 +94,7 @@ class MinerApiController(allHandlers: AllHandlers)(implicit
 
   def ready: Receive = {
     case Tcp.Connected(remote, _) =>
+      log.info("========== new miner connected")
       allHandlers.viewHandler ! ViewHandler.Subscribe
       pendings.addOne(remote -> ActorRefT[Tcp.Command](sender()))
 
