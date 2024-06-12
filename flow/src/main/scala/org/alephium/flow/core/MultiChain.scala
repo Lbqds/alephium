@@ -18,12 +18,15 @@ package org.alephium.flow.core
 
 import scala.reflect.ClassTag
 
+import akka.util.ByteString
+
 import org.alephium.flow.model.BlockState
 import org.alephium.io.{IOResult, IOUtils}
 import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.BrokerConfig
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.{BlockEnv, WorldState}
+import org.alephium.serde.serialize
 import org.alephium.util.{AVector, Cache, RWLock, TimeStamp}
 
 // scalastyle:off number.of.methods
@@ -152,8 +155,8 @@ trait MultiChain extends BlockPool with BlockHeaderPool with FlowDifficultyAdjus
   def getHashes(chainIndex: ChainIndex, height: Int): IOResult[AVector[BlockHash]] =
     getHeaderChain(chainIndex).getHashes(height)
 
-  def getMaxHeight(chainIndex: ChainIndex): IOResult[Int] =
-    getHeaderChain(chainIndex).maxHeight
+  def getMaxHeightByWeight(chainIndex: ChainIndex): IOResult[Int] =
+    getHeaderChain(chainIndex).maxHeightByWeight
 
   def getDryrunBlockEnv(chainIndex: ChainIndex): IOResult[BlockEnv] = {
     getHeaderChain(chainIndex).getDryrunBlockEnv()
@@ -180,12 +183,16 @@ trait MultiChain extends BlockPool with BlockHeaderPool with FlowDifficultyAdjus
     getBlockChain(hash).getBlock(hash)
   }
 
+  def getBlockBytes(hash: BlockHash): IOResult[ByteString] = {
+    getBlockChain(hash).getBlockBytes(hash)
+  }
+
   private def getMainChainBlockByGhostUncleUnsafe(
       chainIndex: ChainIndex,
       ghostUncleHash: BlockHash
   ): Option[(Block, Int)] = {
     val chain            = getBlockChain(chainIndex)
-    val maxHeight        = chain.maxHeightUnsafe
+    val maxHeight        = chain.maxHeightByWeightUnsafe
     val ghostUncleHeight = getHeightUnsafe(ghostUncleHash)
     val fromHeight       = Math.min(ghostUncleHeight + 1, maxHeight)
     val toHeight         = Math.min(ghostUncleHeight + ALPH.MaxGhostUncleAge, maxHeight)
@@ -212,10 +219,10 @@ trait MultiChain extends BlockPool with BlockHeaderPool with FlowDifficultyAdjus
   }
 
   val bodyVerifyingBlocks = MultiChain.bodyVerifyingBlocks(brokerConfig.chainNum * 2)
-  def getHeaderVerifiedBlock(hash: BlockHash): IOResult[Block] = {
+  def getHeaderVerifiedBlockBytes(hash: BlockHash): IOResult[ByteString] = {
     bodyVerifyingBlocks.get(hash) match {
-      case Some(block) => Right(block)
-      case None        => getBlock(hash)
+      case Some(block) => Right(serialize(block))
+      case None        => getBlockBytes(hash)
     }
   }
 

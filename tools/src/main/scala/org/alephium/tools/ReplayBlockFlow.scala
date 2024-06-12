@@ -45,31 +45,44 @@ class ReplayBlockFlow(
 
   def start(): BlockValidationResult[Boolean] = {
     for {
-      maxHeights <- from(chainIndexes.mapE(chainIndex => sourceBlockFlow.getMaxHeight(chainIndex)))
-      _          <- from(loadInitialBlocks(targetBlockFlow))
-      _          <- replay(maxHeights)
+      maxHeights <- from(
+        chainIndexes.mapE(chainIndex => sourceBlockFlow.getMaxHeightByWeight(chainIndex))
+      )
+      _                 <- from(loadInitialBlocks(targetBlockFlow))
+      _                 <- replay(maxHeights)
       sourceStateHashes <- fetchBestWorldStateHashes(sourceBlockFlow)
       targetStateHashes <- fetchBestWorldStateHashes(targetBlockFlow)
     } yield sourceStateHashes == targetStateHashes
   }
 
   private def replay(maxHeights: AVector[Int]): BlockValidationResult[Unit] = {
-    var count: Int                          = loadedHeights.map(_ - 1).sum
-    var result: BlockValidationResult[Unit] = Right(())
+    val startTs = TimeStamp.now()
+    var count   = loadedHeights.map(_ - 1).sum
+    var countTs = TimeStamp.now()
+    var result  = Right(()): BlockValidationResult[Unit]
 
     while (pendingBlocks.nonEmpty && result.isRight) {
       val (block, blockHeight) = pendingBlocks.dequeue()
       val chainIndex           = block.chainIndex
 
+      var endValidationTs = TimeStamp.zero
       result = for {
         sideEffect <- validator.validate(block, targetBlockFlow)
-        _          <- from(targetBlockFlow.add(block, sideEffect))
-        _          <- loadMoreBlocks(chainIndex, maxHeights, blockHeight)
+        _ <- from(targetBlockFlow.add(block, sideEffect)).map(_ =>
+          endValidationTs = TimeStamp.now()
+        )
+        _ <- loadMoreBlocks(chainIndex, maxHeights, blockHeight)
       } yield ()
 
       count += 1
       if (count % 1000 == 0) {
-        logger.info(s"Replayed #$count blocks")
+        val now           = TimeStamp.now()
+        val eclipsed      = now.deltaUnsafe(startTs).millis
+        val speed         = count * 1000 / eclipsed
+        val cycleEclipsed = now.deltaUnsafe(countTs).millis
+        val cycleSpeed    = 1000 * 1000 / cycleEclipsed
+        countTs = now
+        logger.info(s"Replayed #$count blocks, #$speed BPS, #$cycleSpeed cycle BPS")
       }
     }
 
@@ -124,7 +137,7 @@ class ReplayBlockFlow(
     chainIndexes.foreachE { chainIndex =>
       val chainIndexOneDim = chainIndex.flattenIndex(brokerConfig)
       for {
-        height0 <- targetBlockFlow.getMaxHeight(chainIndex)
+        height0 <- targetBlockFlow.getMaxHeightByWeight(chainIndex)
         height = if (height0 > startLoadingHeight) height0 + 1 else startLoadingHeight
         _ <- loadBlocksAt(chainIndex, height)
       } yield {
