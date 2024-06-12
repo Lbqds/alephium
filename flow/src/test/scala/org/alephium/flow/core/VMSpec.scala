@@ -2169,11 +2169,15 @@ class VMSpec extends AlephiumSpec with Generators {
   trait TxExecutionOrderFixture extends ContractFixture {
     val testContract =
       s"""
-         |Contract Foo(mut x: U256) {
+         |Contract Foo(mut x: U256) implements IFoo {
          |  @using(updateFields = true)
          |  pub fn foo(y: U256) -> () {
          |    x = x * 10 + y
          |  }
+         |}
+         |@using(methodSelector = false)
+         |Interface IFoo {
+         |  pub fn foo(y: U256) -> ()
          |}
          |""".stripMargin
 
@@ -3657,10 +3661,11 @@ class VMSpec extends AlephiumSpec with Generators {
   }
 
   trait CreateContractFixture extends ContractFixture {
-    def useAssets = true
+    def useAssets         = true
+    def useMethodSelector = true
     lazy val contract: String =
       s"""
-         |Contract Foo(mut n: U256) {
+         |Contract Foo(mut n: U256) implements IFoo {
          |  @using(preapprovedAssets = true, updateFields = true)
          |  pub fn foo() -> () {
          |    let subContractId = copyCreateSubContract!{
@@ -3674,6 +3679,13 @@ class VMSpec extends AlephiumSpec with Generators {
          |    ${if (useAssets) "transferTokenFromSelf!(selfAddress!(), ALPH, 1 alph)" else ""}
          |    n = n + 1
          |  }
+         |}
+         |@using(methodSelector = ${useMethodSelector})
+         |Interface IFoo {
+         |  @using(preapprovedAssets = true, updateFields = true)
+         |  pub fn foo() -> ()
+         |  @using(${if (useAssets) "assetsInContract = true, " else ""}updateFields = true)
+         |  pub fn bar() -> ()
          |}
          |""".stripMargin
     lazy val contractId =
@@ -3696,6 +3708,7 @@ class VMSpec extends AlephiumSpec with Generators {
   }
 
   it should "not load contract just after creation before Rhone upgrade" in new CreateContractFixture {
+    override def useMethodSelector: Boolean = false
     override val configValues = Map(
       ("alephium.network.rhone-hard-fork-timestamp", TimeStamp.now().plusHoursUnsafe(1).millis)
     )
@@ -5938,9 +5951,10 @@ class VMSpec extends AlephiumSpec with Generators {
   behavior of "Reentrancy protection"
 
   trait ReentrancyFixture extends ContractFixture {
-    val foo =
+    def useMethodSelector: Boolean = true
+    lazy val foo =
       s"""
-         |Contract Foo() {
+         |Contract Foo() implements IFoo {
          |  @using(assetsInContract = true)
          |  pub fn withdraw0(target: Address) -> () {
          |    transferTokenFromSelf!(target, ALPH, 1 alph)
@@ -5954,6 +5968,15 @@ class VMSpec extends AlephiumSpec with Generators {
          |    transferTokenFromSelf!(target, ALPH, 1 alph)
          |    withdraw1(target)
          |  }
+         |}
+         |@using(methodSelector = ${useMethodSelector})
+         |Interface IFoo {
+         |  @using(assetsInContract = true)
+         |  pub fn withdraw0(target: Address) -> ()
+         |  @using(assetsInContract = true)
+         |  pub fn withdraw1(target: Address) -> ()
+         |  @using(assetsInContract = true)
+         |  pub fn withdraw2(target: Address) -> ()
          |}
          |""".stripMargin
 
@@ -5995,6 +6018,7 @@ class VMSpec extends AlephiumSpec with Generators {
   }
 
   it should "not call multiple asset functions in the same contract: Leman" in new ReentrancyFixture {
+    override def useMethodSelector: Boolean = false
     override val configValues =
       Map(("alephium.network.rhone-hard-fork-timestamp", TimeStamp.Max.millis))
     networkConfig.getHardFork(TimeStamp.now()) is HardFork.Leman
@@ -6392,6 +6416,28 @@ class VMSpec extends AlephiumSpec with Generators {
 
     val receiver = tx1.unsigned.fixedOutputs.head.lockupScript
     getAlphBalance(blockFlow, receiver) is ALPH.oneAlph.subUnsafe(nonCoinbaseMinGasFee)
+  }
+
+  it should "check inactive instrs when creating contract" in new ContractFixture {
+    override val configValues =
+      Map(("alephium.network.rhone-hard-fork-timestamp", TimeStamp.Max.millis))
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Leman
+
+    val code =
+      s"""
+         |Contract Foo() implements IFoo {
+         |  pub fn foo() -> () {
+         |    let _ = groupOfAddress!(@$genesisAddress)
+         |  }
+         |}
+         |@using(methodSelector = false)
+         |Interface IFoo {
+         |  pub fn foo() -> ()
+         |}
+         |""".stripMargin
+
+    intercept[AssertionError](createContract(code)).getMessage is
+      "Right(TxScriptExeFailed(InactiveInstr(GroupOfAddress)))"
   }
 
   private def getEvents(

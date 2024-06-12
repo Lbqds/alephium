@@ -11,15 +11,19 @@ jobs:
     strategy:
       matrix:
         # os: [ macos-latest, windows-latest, ubuntu-latest ]
-        os: [ windows-latest, ubuntu-latest ]
+        os: [ windows-latest ]
         java: [ '11' ]
     steps:
       - uses: actions/checkout@v2
       - name: Setup JDK
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: sbt
-      - run: sbt it:test
+      - run: |
+          N=100
+          for i in $(seq 1 $N); do
+            sbt 'integrationTest'
+          done
         shell: bash

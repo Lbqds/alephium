@@ -2869,19 +2869,8 @@ class ServerUtilsSpec extends AlephiumSpec {
       rhoneHardForkTimestamp = TimeStamp.unsafe(Long.MaxValue)
     )
 
-    val contractAddress = deployContract(fooContract)
-
-    def script =
-      s"""
-         |TxScript Main {
-         |  Foo(#${contractAddress.toBase58}).foo()
-         |}
-         |
-         |$fooContract
-         |""".stripMargin
-
-    val exception = intercept[AssertionError](executeScript(script))
-    exception.getMessage() is "Right(TxScriptExeFailed(InactiveInstr(PayGasFee)))"
+    intercept[AssertionError](deployContract(fooContract)).getMessage is
+      "BadRequest(Execution error when estimating gas for tx script or contract: InactiveInstr(MethodSelector(Selector(-1928645066))))"
   }
 
   it should "not charge caller gas fee when contract is paying gas" in new GasFeeFixture {
@@ -3422,7 +3411,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     addAndCheck(blockFlow, block0, block1)
     val block2 = mineBlockTemplate(blockFlow, chainIndex)
     addAndCheck(blockFlow, block2)
-    blockFlow.getMaxHeight(chainIndex).rightValue is 2
+    blockFlow.getMaxHeightByWeight(chainIndex).rightValue is 2
 
     val ghostUncleHash  = blockFlow.getHashes(chainIndex, 1).rightValue.last
     val ghostUncleBlock = blockFlow.getBlock(ghostUncleHash).rightValue
@@ -3438,7 +3427,7 @@ class ServerUtilsSpec extends AlephiumSpec {
     val block0     = emptyBlock(blockFlow, chainIndex)
     val block1     = emptyBlock(blockFlow, chainIndex)
     addAndCheck(blockFlow, block0, block1)
-    blockFlow.getMaxHeight(chainIndex).rightValue is 1
+    blockFlow.getMaxHeightByWeight(chainIndex).rightValue is 1
 
     val serverUtils    = new ServerUtils()
     val ghostUncleHash = blockFlow.getHashes(chainIndex, 1).rightValue.last
@@ -3449,7 +3438,7 @@ class ServerUtilsSpec extends AlephiumSpec {
       addAndCheck(blockFlow, block)
     }
     serverUtils.getMainChainBlockByGhostUncle(blockFlow, ghostUncleHash).leftValue.detail is
-      s"Mainchain block by ghost uncle hash ${ghostUncleHash.toHexString} not found"
+      s"The mainchain block that references the ghost uncle block ${ghostUncleHash.toHexString} not found"
 
     val block = mineBlockTemplate(blockFlow, chainIndex)
     block.ghostUncleHashes.rightValue is AVector(ghostUncleHash)
@@ -3457,6 +3446,42 @@ class ServerUtilsSpec extends AlephiumSpec {
     val blockHeight = blockNum + 2
     serverUtils.getMainChainBlockByGhostUncle(blockFlow, ghostUncleHash).rightValue is
       BlockEntry.from(block, blockHeight).rightValue
+
+    val invalidBlockHash = randomBlockHash(chainIndex)
+    serverUtils.getMainChainBlockByGhostUncle(blockFlow, invalidBlockHash).leftValue.detail is
+      s"The block ${invalidBlockHash.toHexString} does not exist, please check if your full node synced"
+    serverUtils.getMainChainBlockByGhostUncle(blockFlow, block.hash).leftValue.detail is
+      s"The block ${block.hash.toHexString} is not a ghost uncle block, you should use a ghost uncle block hash to call this endpoint"
+  }
+
+  it should "return error if the block does not exist" in new Fixture {
+    val chainIndex       = ChainIndex.unsafe(0, 0)
+    val serverUtils      = new ServerUtils()
+    val invalidBlockHash = randomBlockHash(chainIndex)
+    val block            = emptyBlock(blockFlow, chainIndex)
+    addAndCheck(blockFlow, block)
+    serverUtils.getBlock(blockFlow, block.hash).rightValue is BlockEntry.from(block, 1).rightValue
+    serverUtils.getBlock(blockFlow, invalidBlockHash).leftValue.detail is
+      s"The block ${invalidBlockHash.toHexString} does not exist, please check if your full node synced"
+
+    serverUtils.getBlockHeader(blockFlow, block.hash).rightValue is BlockHeaderEntry.from(
+      block.header,
+      1
+    )
+    serverUtils.getBlockHeader(blockFlow, invalidBlockHash).leftValue.detail is
+      s"The block ${invalidBlockHash.toHexString} does not exist, please check if your full node synced"
+
+    serverUtils.isBlockInMainChain(blockFlow, block.hash).rightValue is true
+    serverUtils.isBlockInMainChain(blockFlow, invalidBlockHash).leftValue.detail is
+      s"The block ${invalidBlockHash.toHexString} does not exist, please check if your full node synced"
+  }
+
+  @scala.annotation.tailrec
+  private def randomBlockHash(
+      chainIndex: ChainIndex
+  )(implicit groupConfig: GroupConfig): BlockHash = {
+    val blockHash = BlockHash.random
+    if (ChainIndex.from(blockHash) == chainIndex) blockHash else randomBlockHash(chainIndex)
   }
 
   private def generateDestination(
