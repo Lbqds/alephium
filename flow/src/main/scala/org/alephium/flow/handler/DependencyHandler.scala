@@ -73,7 +73,13 @@ class DependencyHandler(
       val missingUncles = ArrayBuffer.empty[BlockHash]
       datas.foreach(addPendingData(_, broker, origin, missingUncles))
       if (missingUncles.nonEmpty) {
-        ActorRefT[BrokerHandler.Command](sender()) ! BrokerHandler.DownloadBlocks(AVector.from(missingUncles))
+        val allHashes = datas.map(_.hash).toSet
+        val hashes    = missingUncles.filter(hash => !allHashes.contains(hash))
+        if (hashes.nonEmpty) {
+          ActorRefT[BrokerHandler.Command](sender()) ! BrokerHandler.DownloadBlocks(
+            AVector.from(hashes)
+          )
+        }
       }
       processReadies()
     case ChainHandler.FlowDataAdded(data, _, _) =>
