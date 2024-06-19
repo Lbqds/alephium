@@ -205,7 +205,7 @@ abstract class ChainHandler[T <: FlowData: Serde, S <: InvalidStatus, R, V <: Va
 
     s"hash: ${header.hash.toHexString}; ${index.prettyString}; ${chain.showHeight(
         header.hash
-      )}; total: $total; target hashrate: ${hashRate.MHs}; blockTime: $blockTime"
+      )}; total: $total; target hashrate: ${hashRate.KHs}; blockTime: $blockTime"
   }
 
   protected def measureCommon(header: BlockHeader): BlockHeaderChain = {

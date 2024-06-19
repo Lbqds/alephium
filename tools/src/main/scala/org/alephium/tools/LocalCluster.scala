@@ -113,6 +113,8 @@ class LocalCluster(
     val numZerosAtLeastInHash =
       (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
 
+    logger.info(s"================= zeros: ${numZerosAtLeastInHash}")
+
     ConfigFactory.parseString(
       s"""
          |alephium.genesis.allocations = [
@@ -156,7 +158,7 @@ class LocalCluster(
          |"193maApeJWrz9GFwWCfa982ccLARVE9Y1WgKSJaUs7UAx",
          |"16fZKYPCZJv2TP3FArA9FLUQceTS9U8xVnSjxFG9MBKyY"
          |]
-         |alephium.mining.api-interface = "127.0.0.1"
+         |alephium.mining.api-interface = "0.0.0.0"
          |
          |alephium.wallet.secret-dir = "${rootPath}"
         """.stripMargin

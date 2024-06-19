@@ -43,6 +43,7 @@ object LaunchLocalCluster extends App with StrictLogging {
     System.exit(1)
   }
 
+  @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   val localCluster: LocalCluster = new LocalCluster(
     localClusterConfig.numberOfNodes,
     localClusterConfig.singleNodeDiff,
@@ -86,8 +87,8 @@ object LaunchLocalCluster extends App with StrictLogging {
           localCluster.startMiner(servers.take(numberOfMiningNodes))
         }
 
-        Wallet.restoreWallets(servers)
-        new TransferSimutation(servers).simulate()
+        // Wallet.restoreWallets(servers)
+        // new TransferSimutation(servers).simulate()
       case Failure(error) => throw error
       case _ =>
         Thread.sleep(1000)

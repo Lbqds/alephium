@@ -32,6 +32,7 @@ final case class HashRate private (value: BigInteger) extends AnyVal with Ordere
 
   // scalastyle:off magic.number
   def MHs: String = s"${value.divide(BigInteger.valueOf(1000000))} MH/s"
+  def KHs: String = s"${value.divide(BigInteger.valueOf(1000))} KH/s"
   // scalastyle:on magic.number
 }
 
