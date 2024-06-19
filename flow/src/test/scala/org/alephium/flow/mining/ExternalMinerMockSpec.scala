@@ -127,7 +127,7 @@ class ExternalMinerMockSpec extends AlephiumActorSpec {
 
     lazy val minerProbe = TestProbe()
     lazy val miner = newTestActorRef[ExternalMinerMock](
-      ExternalMinerMock.props(AVector.from(controllersAddresses))
+      ExternalMinerMock.props(AVector.from(controllersAddresses), false)
     )
   }
 }

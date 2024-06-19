@@ -34,18 +34,22 @@ object CpuSoloMiner extends App {
   val config: AlephiumConfig = AlephiumConfig.load(typesafeConfig, "alephium")
   val system: ActorSystem    = ActorSystem("cpu-miner", typesafeConfig)
 
-  new CpuSoloMiner(config, system, args.headOption)
+  new CpuSoloMiner(config, system, args.headOption, false)
 }
 
-class CpuSoloMiner(config: AlephiumConfig, system: ActorSystem, rawApiAddresses: Option[String])
-    extends StrictLogging {
+class CpuSoloMiner(
+    config: AlephiumConfig,
+    system: ActorSystem,
+    rawApiAddresses: Option[String],
+    onlyMineChain00: Boolean
+) extends StrictLogging {
   val miner: ActorRef = {
     val props = rawApiAddresses match {
       case None =>
-        ExternalMinerMock.singleNode(config)
+        ExternalMinerMock.singleNode(config, onlyMineChain00)
       case Some(rawAddresses) =>
         val addresses = rawAddresses.split(",").map(parseHostAndPort)
-        ExternalMinerMock.props(config, AVector.unsafe(addresses))
+        ExternalMinerMock.props(config, AVector.unsafe(addresses), onlyMineChain00)
     }
     system.actorOf(props)
   }

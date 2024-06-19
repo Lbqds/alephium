@@ -21,12 +21,14 @@ import java.util.concurrent.TimeUnit
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
 
+import akka.actor.ActorSystem
 import akka.pattern.ask
 import akka.util.Timeout
 import com.typesafe.scalalogging.StrictLogging
 
-import org.alephium.app.Server
+import org.alephium.app.{CpuSoloMiner, Server}
 import org.alephium.flow.network.InterCliqueManager
+import org.alephium.flow.setting.AlephiumConfig
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.util.{Duration, TimeStamp}
 
@@ -45,8 +47,6 @@ object LaunchLocalCluster extends App with StrictLogging {
 
   @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
   val localCluster: LocalCluster = new LocalCluster(
-    localClusterConfig.numberOfNodes,
-    localClusterConfig.singleNodeDiff,
     TimeStamp.now() + Duration.from(localClusterConfig.rhoneHardForkActivationWindow).get
   )
 
@@ -87,8 +87,8 @@ object LaunchLocalCluster extends App with StrictLogging {
           localCluster.startMiner(servers.take(numberOfMiningNodes))
         }
 
-        // Wallet.restoreWallets(servers)
-        // new TransferSimutation(servers).simulate()
+      // Wallet.restoreWallets(servers)
+      // new TransferSimutation(servers).simulate()
       case Failure(error) => throw error
       case _ =>
         Thread.sleep(1000)
@@ -97,5 +97,16 @@ object LaunchLocalCluster extends App with StrictLogging {
   }
 
   checkSyncedAndStart()
+}
+
+object Chain00Miner extends App {
+  import LocalCluster._
+
+  private val rootPath = getNodeRootPath(0)
+  private val typesafeConfig =
+    getConfig(TimeStamp.now(), 19973, 22973, 21973, 20973, rootPath, Seq.empty)
+  private val config = AlephiumConfig.load(typesafeConfig)
+  private val system = ActorSystem("chain00-miner", typesafeConfig)
+  new CpuSoloMiner(config, system, args.headOption, true)
 }
 // scalastyle:on magic.number

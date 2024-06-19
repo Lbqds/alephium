@@ -32,29 +32,34 @@ import org.alephium.serde.{serialize, SerdeResult, Staging}
 import org.alephium.util.{ActorRefT, AVector}
 
 object ExternalMinerMock {
-  def singleNode(config: AlephiumConfig): Props = {
+  def singleNode(config: AlephiumConfig, onlyMineChain00: Boolean): Props = {
     require(config.broker.brokerNum == 1, "Only clique of 1 broker is supported")
 
     props(
       config,
-      AVector(new InetSocketAddress(config.mining.apiInterface, config.network.minerApiPort))
+      AVector(new InetSocketAddress(config.mining.apiInterface, config.network.minerApiPort)),
+      onlyMineChain00
     )
   }
 
-  def props(config: AlephiumConfig, nodes: AVector[InetSocketAddress]): Props = {
+  def props(
+      config: AlephiumConfig,
+      nodes: AVector[InetSocketAddress],
+      onlyMineChain00: Boolean
+  ): Props = {
 //    require(
 //      config.broker.groups % nodes.length == 0,
 //      s"Invalid number of nodes ${nodes.length} for groups ${config.broker.groups}"
 //    )
 
-    props(nodes)(
+    props(nodes, onlyMineChain00)(
       config.broker,
       config.network,
       config.mining
     ).withDispatcher(MiningDispatcher)
   }
 
-  def props(nodes: AVector[InetSocketAddress])(implicit
+  def props(nodes: AVector[InetSocketAddress], onlyMineChain00: Boolean)(implicit
       groupConfig: GroupConfig,
       networkSetting: NetworkSetting,
       miningConfig: MiningSetting
@@ -65,7 +70,7 @@ object ExternalMinerMock {
       override val brokerNum: Int = 1
       override def groups: Int    = groupConfig.groups
     }
-    Props(new ExternalMinerMock(nodes))
+    Props(new ExternalMinerMock(nodes, onlyMineChain00))
   }
 
   sealed trait Command
@@ -95,7 +100,7 @@ object ExternalMinerMock {
 }
 
 // the addresses should be ordered by brokerId of the nodes
-class ExternalMinerMock(nodes: AVector[InetSocketAddress])(implicit
+class ExternalMinerMock(nodes: AVector[InetSocketAddress], onlyMineChain00: Boolean)(implicit
     val brokerConfig: BrokerConfig,
     val networkSetting: NetworkSetting,
     val miningConfig: MiningSetting
@@ -106,6 +111,19 @@ class ExternalMinerMock(nodes: AVector[InetSocketAddress])(implicit
   def receive: Receive = handleMining orElse handleMiningTasks orElse handleConnection
 
   val backoffStrategies: MHashMap[InetSocketAddress, ResetBackoffStrategy] = MHashMap.empty
+
+  @SuppressWarnings(Array("org.wartremover.warts.OptionPartial"))
+  override def pickTasks(): IndexedSeq[(Int, Int, Job)] = {
+    if (onlyMineChain00) {
+      if (!isRunning(0, 0) && pendingTasks(0)(0).nonEmpty) {
+        IndexedSeq((0, 0, pendingTasks(0)(0).get))
+      } else {
+        IndexedSeq.empty
+      }
+    } else {
+      super.pickTasks()
+    }
+  }
 
   private def shutdown(message: String) = {
     log.info(message)

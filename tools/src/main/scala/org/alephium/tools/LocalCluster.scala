@@ -31,17 +31,13 @@ import org.alephium.api.model.{Amount, Destination}
 import org.alephium.app.{ApiConfig, BootUp, CpuSoloMiner, Server}
 import org.alephium.crypto.wallet.Mnemonic
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
-import org.alephium.protocol.{ALPH, Hash}
+import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.GroupConfig
 import org.alephium.protocol.model.{Address, GroupIndex}
 import org.alephium.protocol.vm.LockupScript
-import org.alephium.util.{AVector, Env, Files => AFiles, TimeStamp}
+import org.alephium.util.{AVector, Env, TimeStamp}
 
-class LocalCluster(
-    numberOfNodes: Int,
-    singleNodeDiff: Int,
-    rhoneHardforkTimestamp: TimeStamp
-) extends StrictLogging {
+class LocalCluster(rhoneHardforkTimestamp: TimeStamp) extends StrictLogging {
 
   import LocalCluster._
 
@@ -54,7 +50,7 @@ class LocalCluster(
       bootStrapNodes: Seq[Server]
   ): Server = {
     try {
-      val rootPath: Path = AFiles.tmpDir.resolve(s".alephium-rhone-${Hash.random.shortHex}")
+      val rootPath: Path = getNodeRootPath(index)
       if (!Files.exists(rootPath)) {
         rootPath.toFile.mkdir()
       }
@@ -63,7 +59,15 @@ class LocalCluster(
         Env.Prod,
         rootPath,
         overwrite = true,
-        predefined = getConfig(publicPort, restPort, wsPort, minerApiPort, rootPath, bootStrapNodes)
+        predefined = getConfig(
+          rhoneHardforkTimestamp,
+          publicPort,
+          restPort,
+          wsPort,
+          minerApiPort,
+          rootPath,
+          bootStrapNodes
+        )
       )
 
       val flowSystem: ActorSystem = ActorSystem(s"flow-$index", baseConfig)
@@ -91,80 +95,8 @@ class LocalCluster(
         s"$hostAddr:$minerApiPort"
       }
       .mkString(",")
-    new CpuSoloMiner(servers(0).config, servers(0).flowSystem, Some(apiAddresses))
+    new CpuSoloMiner(servers(0).config, servers(0).flowSystem, Some(apiAddresses), false)
   }
-
-  // scalastyle:off method.length
-  private def getConfig(
-      publicPort: Int,
-      restPort: Int,
-      wsPort: Int,
-      minerApiPort: Int,
-      rootPath: Path,
-      bootStrapNodes: Seq[Server]
-  ): Config = {
-    val bootStrapConfig = bootStrapNodes
-      .map { server =>
-        val bindAddress = server.config.network.bindAddress
-        s""""${bindAddress.getHostString}:${bindAddress.getPort}""""
-      }
-      .mkString("[", ",", "]")
-
-    val numZerosAtLeastInHash =
-      (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
-
-    logger.info(s"================= zeros: ${numZerosAtLeastInHash}")
-
-    ConfigFactory.parseString(
-      s"""
-         |alephium.genesis.allocations = [
-         |  {
-         |    address = "${Genesis.address}",
-         |    amount = 1000000000000000000000000,
-         |    lock-duration = 0 seconds
-         |  }
-         |]
-         |
-         |alephium.consensus.num-zeros-at-least-in-hash = $numZerosAtLeastInHash
-         |alephium.consensus.mainnet.uncle-dependency-gap-time = 16 seconds
-         |alephium.consensus.mainnet.block-target-time = 64 seconds
-         |alephium.consensus.rhone.uncle-dependency-gap-time = 8 seconds
-         |alephium.consensus.rhone.block-target-time = 16 seconds
-         |
-         |alephium.discovery.bootstrap = $bootStrapConfig
-         |alephium.discovery.max-clique-from-same-ip = ${numberOfNodes}
-         |
-         |alephium.node.event-log.enabled=true
-         |alephium.node.event-log.index-by-tx-id = true
-         |alephium.node.event-log.index-by-block-hash = true
-         |
-         |alephium.api.network-interface = "127.0.0.1"
-         |alephium.api.api-key-enabled = false
-         |
-         |alephium.network.network-id = 3
-         |alephium.network.rhone-hard-fork-timestamp = ${rhoneHardforkTimestamp.millis}
-         |alephium.network.rest-port = $restPort
-         |alephium.network.ws-port = $wsPort
-         |alephium.network.miner-api-port = $minerApiPort
-         |alephium.network.bind-address  = "127.0.0.1:$publicPort"
-         |alephium.network.internal-address  = "127.0.0.1:$publicPort"
-         |alephium.network.coordinator-address  = "127.0.0.1:$publicPort"
-         |alephium.network.external-address  = "127.0.0.1:$publicPort"
-         |alephium.network.max-clique-from-same-ip = ${numberOfNodes}
-         |
-         |alephium.mining.miner-addresses = [
-         |"1FsroWmeJPBhcPiUr37pWXdojRBe6jdey9uukEXk1TheA",
-         |"1CQvSXsmM5BMFKguKDPpNUfw1idiut8UifLtT8748JdHc",
-         |"193maApeJWrz9GFwWCfa982ccLARVE9Y1WgKSJaUs7UAx",
-         |"16fZKYPCZJv2TP3FArA9FLUQceTS9U8xVnSjxFG9MBKyY"
-         |]
-         |alephium.mining.api-interface = "0.0.0.0"
-         |
-         |alephium.wallet.secret-dir = "${rootPath}"
-        """.stripMargin
-    )
-  }
-  // scalastyle:on method.length
 }
 
 object LocalCluster extends StrictLogging {
@@ -311,4 +243,90 @@ object LocalCluster extends StrictLogging {
       }
     }
   }
+
+  def getNodeRootPath(index: Int): Path = {
+    Paths.get(System.getProperty("user.home")).resolve(s".alephium-local-cluster/node-$index")
+  }
+
+  def calcNumZerosAtLeastInHash(): Int = {
+    val localClusterConfig = loadLocalClusterConfig()
+    val singleNodeDiff     = localClusterConfig.singleNodeDiff
+    val numberOfNodes      = localClusterConfig.numberOfNodes
+    (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
+  }
+
+  // scalastyle:off method.length
+  def getConfig(
+      rhoneHardforkTimestamp: TimeStamp,
+      publicPort: Int,
+      restPort: Int,
+      wsPort: Int,
+      minerApiPort: Int,
+      rootPath: Path,
+      bootStrapNodes: Seq[Server]
+  ): Config = {
+    val bootStrapConfig = bootStrapNodes
+      .map { server =>
+        val bindAddress = server.config.network.bindAddress
+        s""""${bindAddress.getHostString}:${bindAddress.getPort}""""
+      }
+      .mkString("[", ",", "]")
+
+    val localClusterConfig = loadLocalClusterConfig()
+    val singleNodeDiff     = localClusterConfig.singleNodeDiff
+    val numberOfNodes      = localClusterConfig.numberOfNodes
+    val numZerosAtLeastInHash =
+      (Math.log(Math.pow(2, singleNodeDiff.toDouble) / numberOfNodes) / Math.log(2)).toInt
+    logger.info(s"================= zeros: $numZerosAtLeastInHash")
+
+    ConfigFactory.parseString(
+      s"""
+         |alephium.genesis.allocations = [
+         |  {
+         |    address = "${Genesis.address}",
+         |    amount = 1000000000000000000000000,
+         |    lock-duration = 0 seconds
+         |  }
+         |]
+         |
+         |alephium.consensus.num-zeros-at-least-in-hash = $numZerosAtLeastInHash
+         |alephium.consensus.mainnet.uncle-dependency-gap-time = 16 seconds
+         |alephium.consensus.mainnet.block-target-time = 64 seconds
+         |alephium.consensus.rhone.uncle-dependency-gap-time = 8 seconds
+         |alephium.consensus.rhone.block-target-time = 16 seconds
+         |
+         |alephium.discovery.bootstrap = $bootStrapConfig
+         |alephium.discovery.max-clique-from-same-ip = ${numberOfNodes}
+         |
+         |alephium.node.event-log.enabled=true
+         |alephium.node.event-log.index-by-tx-id = true
+         |alephium.node.event-log.index-by-block-hash = true
+         |
+         |alephium.api.network-interface = "127.0.0.1"
+         |alephium.api.api-key-enabled = false
+         |
+         |alephium.network.network-id = 3
+         |alephium.network.rhone-hard-fork-timestamp = ${rhoneHardforkTimestamp.millis}
+         |alephium.network.rest-port = $restPort
+         |alephium.network.ws-port = $wsPort
+         |alephium.network.miner-api-port = $minerApiPort
+         |alephium.network.bind-address  = "127.0.0.1:$publicPort"
+         |alephium.network.internal-address  = "127.0.0.1:$publicPort"
+         |alephium.network.coordinator-address  = "127.0.0.1:$publicPort"
+         |alephium.network.external-address  = "127.0.0.1:$publicPort"
+         |alephium.network.max-clique-from-same-ip = ${numberOfNodes}
+         |
+         |alephium.mining.miner-addresses = [
+         |"1FsroWmeJPBhcPiUr37pWXdojRBe6jdey9uukEXk1TheA",
+         |"1CQvSXsmM5BMFKguKDPpNUfw1idiut8UifLtT8748JdHc",
+         |"193maApeJWrz9GFwWCfa982ccLARVE9Y1WgKSJaUs7UAx",
+         |"16fZKYPCZJv2TP3FArA9FLUQceTS9U8xVnSjxFG9MBKyY"
+         |]
+         |alephium.mining.api-interface = "0.0.0.0"
+         |
+         |alephium.wallet.secret-dir = "${rootPath}"
+        """.stripMargin
+    )
+  }
+  // scalastyle:on method.length
 }
