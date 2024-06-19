@@ -67,10 +67,12 @@ class ServerUtils(implicit
   }
 
   def getBlocks(blockFlow: BlockFlow, timeInterval: TimeInterval): Try[BlocksPerTimeStampRange] = {
-    getHeightedBlocks(blockFlow, timeInterval).map { heightedBlocks =>
-      BlocksPerTimeStampRange(heightedBlocks.map(_._2.map { case (block, height) =>
-        BlockEntry.from(block, height)
-      }))
+    getHeightedBlocks(blockFlow, timeInterval).flatMap { heightedBlocks =>
+      heightedBlocks
+        .mapE(_._2.mapE { case (block, height) =>
+          BlockEntry.from(block, height).left.map(failed)
+        })
+        .map(BlocksPerTimeStampRange)
     }
   }
 
@@ -81,10 +83,13 @@ class ServerUtils(implicit
     getHeightedBlocks(blockFlow, timeInterval).flatMap { heightedBlocks =>
       heightedBlocks
         .mapE(_._2.mapE { case (block, height) =>
-          val blockEntry = BlockEntry.from(block, height)
-          getEventsByBlockHash(blockFlow, blockEntry.hash).map(events =>
+          for {
+            blockEntry <- BlockEntry.from(block, height).left.map(failed)
+            events     <- getEventsByBlockHash(blockFlow, blockEntry.hash)
+          } yield {
             BlockAndEvents(blockEntry, events.events)
-          )
+          }
+
         })
         .map(BlocksAndEventsPerTimeStampRange)
     }
@@ -434,18 +439,57 @@ class ServerUtils(implicit
     } yield count
   }
 
+  private def handleBlockError(blockHash: BlockHash, error: IOError) = {
+    error match {
+      case _: IOError.KeyNotFound =>
+        failed(
+          s"The block ${blockHash.toHexString} does not exist, please check if your full node synced"
+        )
+      case other =>
+        failed(s"Fail fetching block with hash ${blockHash.toHexString}, error: $other")
+    }
+  }
+
   def getBlock(blockFlow: BlockFlow, hash: BlockHash): Try[BlockEntry] =
     for {
       _ <- checkHashChainIndex(hash)
       block <- blockFlow
         .getBlock(hash)
         .left
-        .map(_ => failed(s"Fail fetching block with header ${hash.toHexString}"))
+        .map(handleBlockError(hash, _))
       height <- blockFlow
         .getHeight(block.header)
         .left
         .map(failedInIO)
-    } yield BlockEntry.from(block, height)
+      blockEntry <- BlockEntry.from(block, height).left.map(failed)
+    } yield blockEntry
+
+  def getMainChainBlockByGhostUncle(
+      blockFlow: BlockFlow,
+      ghostUncleHash: BlockHash
+  ): Try[BlockEntry] =
+    for {
+      chainIndex <- checkHashChainIndex(ghostUncleHash)
+      result <- blockFlow
+        .getMainChainBlockByGhostUncle(chainIndex, ghostUncleHash)
+        .left
+        .map(handleBlockError(ghostUncleHash, _))
+      blockEntry <- result match {
+        case None =>
+          isBlockInMainChain(blockFlow, ghostUncleHash).flatMap { isMainChainBlock =>
+            if (isMainChainBlock) {
+              val message =
+                s"The block ${ghostUncleHash.toHexString} is not a ghost uncle block, you should use a ghost uncle block hash to call this endpoint"
+              Left(failed(message))
+            } else {
+              val resource =
+                s"The mainchain block that references the ghost uncle block ${ghostUncleHash.toHexString}"
+              Left(notFound(resource))
+            }
+          }
+        case Some((block, height)) => BlockEntry.from(block, height).left.map(failed)
+      }
+    } yield blockEntry
 
   def getBlockAndEvents(blockFlow: BlockFlow, hash: BlockHash): Try[BlockAndEvents] =
     for {
@@ -458,7 +502,7 @@ class ServerUtils(implicit
       height <- blockFlow
         .getHeight(blockHash)
         .left
-        .map(_ => failed(s"Fail fetching block height with hash ${blockHash.toHexString}"))
+        .map(handleBlockError(blockHash, _))
       hashes <- blockFlow
         .getHashes(ChainIndex.from(blockHash), height)
         .left
@@ -471,7 +515,7 @@ class ServerUtils(implicit
       blockHeader <- blockFlow
         .getBlockHeader(hash)
         .left
-        .map(_ => failed(s"Fail fetching block header with hash ${hash}"))
+        .map(handleBlockError(hash, _))
       height <- blockFlow
         .getHeight(hash)
         .left
@@ -493,7 +537,7 @@ class ServerUtils(implicit
   def getChainInfo(blockFlow: BlockFlow, chainIndex: ChainIndex): Try[ChainInfo] =
     for {
       maxHeight <- blockFlow
-        .getMaxHeight(chainIndex)
+        .getMaxHeightByWeight(chainIndex)
         .left
         .map(failedInIO)
     } yield ChainInfo(maxHeight)

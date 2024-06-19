@@ -23,9 +23,11 @@ import scala.util.{Failure, Success}
 import akka.util.ByteString
 import com.typesafe.scalalogging.LazyLogging
 
-import org.alephium.flow.model.MiningBlob
+import org.alephium.flow.model.BlockFlowTemplate
 import org.alephium.flow.setting.MiningSetting
-import org.alephium.protocol.config.GroupConfig
+import org.alephium.flow.validation.InvalidTestnetMiner
+import org.alephium.protocol.ALPH
+import org.alephium.protocol.config.{GroupConfig, NetworkConfig}
 import org.alephium.protocol.mining.PoW
 import org.alephium.protocol.model._
 import org.alephium.serde.deserialize
@@ -36,32 +38,32 @@ object Miner extends LazyLogging {
   case object IsMining                                                      extends Command
   case object Start                                                         extends Command
   case object Stop                                                          extends Command
-  final case class Mine(index: ChainIndex, template: MiningBlob)            extends Command
+  final case class Mine(index: ChainIndex, job: Job)                        extends Command
   final case class NewBlockSolution(block: Block, miningCount: U256)        extends Command
   final case class MiningNoBlock(chainIndex: ChainIndex, miningCount: U256) extends Command
 
-  def mine(index: ChainIndex, template: MiningBlob)(implicit
+  def mine(index: ChainIndex, job: Job)(implicit
       groupConfig: GroupConfig,
       miningConfig: MiningSetting
   ): Option[(Block, U256)] = {
-    mine(index, template.headerBlob, Target.unsafe(template.target)).map {
-      case (nonce, miningCount) =>
-        val blockBlob = template.toBlockBlob(nonce)
-        deserialize[Block](blockBlob) match {
-          case Left(error)  => throw new RuntimeException(s"Unable to deserialize block: $error")
-          case Right(block) => block -> miningCount
-        }
+    mine(index, job.headerBlob, Target.unsafe(job.target)).map { case (nonce, miningCount) =>
+      val blockBlob = job.toBlockBlob(nonce)
+      deserialize[Block](blockBlob) match {
+        case Left(error)  => throw new RuntimeException(s"Unable to deserialize block: $error")
+        case Right(block) => block -> miningCount
+      }
     }
   }
 
-  def mineForDev(index: ChainIndex, template: MiningBlob)(implicit
+  def mineForDev(index: ChainIndex, template: BlockFlowTemplate)(implicit
       groupConfig: GroupConfig
   ): Block = {
-    val target    = Target.unsafe(template.target)
+    val job       = Job.from(template)
+    val target    = template.target
     val nonceStep = U256.unsafe(Int.MaxValue)
-    mine(index, template.headerBlob, target, nonceStep) match {
+    mine(index, job.headerBlob, target, nonceStep) match {
       case Some((nonce, _)) =>
-        val blockBlob = template.toBlockBlob(nonce)
+        val blockBlob = job.toBlockBlob(nonce)
         deserialize[Block](blockBlob) match {
           case Left(error)  => throw new RuntimeException(s"Unable to deserialize block: $error")
           case Right(block) => block
@@ -121,6 +123,29 @@ object Miner extends LazyLogging {
         }
     }
   }
+
+  @inline def validateTestnetMiners(
+      minersOpt: Option[AVector[Address.Asset]]
+  )(implicit network: NetworkConfig): Either[String, Unit] = {
+    minersOpt match {
+      case Some(miners) => validateTestnetMiners(miners)
+      case None         => Right(())
+    }
+  }
+
+  @inline def validateTestnetMiners(
+      miners: AVector[Address.Asset]
+  )(implicit network: NetworkConfig): Either[String, Unit] = {
+    if (network.networkId == NetworkId.AlephiumTestNet) {
+      if (ALPH.isTestnetMinersWhitelisted(miners)) {
+        Right(())
+      } else {
+        Left(InvalidTestnetMiner.toString)
+      }
+    } else {
+      Right(())
+    }
+  }
 }
 
 trait Miner extends BaseActor with MinerState {
@@ -145,7 +170,7 @@ trait Miner extends BaseActor with MinerState {
       } else {
         log.info("Mining already stopped")
       }
-    case Miner.Mine(index, template) => mine(index, template)
+    case Miner.Mine(index, job) => mine(index, job)
     case Miner.NewBlockSolution(block, miningCount) =>
       log.debug(s"Publish the new mined block ${block.hash.shortHex}")
       publishNewBlock(block)
@@ -170,15 +195,14 @@ trait Miner extends BaseActor with MinerState {
     val fromShift = brokerConfig.groupIndexOfBroker(chainIndex.from)
     val to        = chainIndex.to.value
     increaseCounts(fromShift, to, miningCount)
+    pendingTasks(fromShift)(to) = None
 
     val totalCount = getMiningCount(fromShift, to)
     val txCount    = block.transactions.length
     log.debug(s"MiningCounts: $countsToString")
-    val minerAddress =
-      Address.Asset(block.coinbase.unsigned.fixedOutputs.head.lockupScript).toBase58
     log.info(
       s"A new block ${block.hash.toHexString} got mined for $chainIndex, tx: $txCount, " +
-        s"miningCount: $totalCount, target: ${block.header.target}, miner: $minerAddress"
+        s"miningCount: $totalCount, target: ${block.header.target}"
     )
   }
 
@@ -195,15 +219,15 @@ trait Miner extends BaseActor with MinerState {
   def startTask(
       fromShift: Int,
       to: Int,
-      template: MiningBlob
+      job: Job
   ): Unit = {
     val index = ChainIndex.unsafe(brokerConfig.groupRange(fromShift), to)
-    scheduleOnce(self, Miner.Mine(index, template), miningConfig.batchDelay)
+    scheduleOnce(self, Miner.Mine(index, job), miningConfig.batchDelay)
   }
 
-  def mine(index: ChainIndex, template: MiningBlob): Unit = {
+  def mine(index: ChainIndex, job: Job): Unit = {
     val task = Future {
-      Miner.mine(index, template) match {
+      Miner.mine(index, job) match {
         case Some((block, miningCount)) =>
           self ! Miner.NewBlockSolution(block, miningCount)
         case None =>
@@ -212,7 +236,7 @@ trait Miner extends BaseActor with MinerState {
     }(context.dispatcher)
     task.onComplete {
       case Success(_) => ()
-      case Failure(e) => log.debug(s"Mining task failed ${e.getMessage}")
+      case Failure(e) => log.debug(s"Mining task failed: ${e.getMessage}")
     }(context.dispatcher)
   }
 }

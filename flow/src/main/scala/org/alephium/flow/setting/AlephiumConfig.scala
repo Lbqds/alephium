@@ -121,7 +121,8 @@ final case class MiningSetting(
     nonceStep: U256,
     batchDelay: Duration,
     apiInterface: InetAddress,
-    pollingInterval: Duration
+    pollingInterval: Duration,
+    jobCacheSizePerChain: Int
 )
 
 final case class NetworkSetting(
@@ -205,12 +206,10 @@ final case class MemPoolSetting(
 
 final case class WalletSetting(enabled: Boolean, secretDir: Path, lockingTimeout: Duration)
 
-object WalletSetting {
-  final case class BlockFlow(host: String, port: Int, groups: Int)
-}
-
 final case class NodeSetting(
     dbSyncWrite: Boolean,
+    assetTrieCacheMaxByteSize: Int,
+    contractTrieCacheMaxByteSize: Int,
     eventLog: LogConfig
 ) {
   def eventLogConfig: LogConfig = eventLog
@@ -363,7 +362,8 @@ object AlephiumConfig {
       nonceStep: U256,
       batchDelay: Duration,
       apiInterface: InetAddress,
-      pollingInterval: Duration
+      pollingInterval: Duration,
+      jobCacheSizePerChain: Int
   ) {
     def toMiningSetting(addresses: Option[AVector[Address.Asset]]): MiningSetting = {
       MiningSetting(
@@ -371,7 +371,8 @@ object AlephiumConfig {
         nonceStep,
         batchDelay,
         apiInterface,
-        pollingInterval
+        pollingInterval,
+        jobCacheSizePerChain
       )
     }
   }
@@ -392,12 +393,16 @@ object AlephiumConfig {
         val consensusExtracted = consensus.toConsensusSettings(broker)
         val networkExtracted   = network.toNetworkSetting(ActorRefT.apply)
         val discoveryRefined = if (network.networkId == NetworkId.AlephiumTestNet) {
-          discovery.copy(bootstrap =
-            ArraySeq(
-              new InetSocketAddress("v17-bootstrap0.testnet.alephium.org", 9973),
-              new InetSocketAddress("v17-bootstrap1.testnet.alephium.org", 9973)
+          if (discovery.bootstrap.isEmpty) {
+            discovery.copy(bootstrap =
+              ArraySeq(
+                new InetSocketAddress("bootstrap0.testnet.alephium.org", 9973),
+                new InetSocketAddress("bootstrap1.testnet.alephium.org", 9973)
+              )
             )
-          )
+          } else {
+            discovery
+          }
         } else {
           discovery
         }
@@ -451,6 +456,13 @@ object AlephiumConfig {
       config.network.lemanHardForkTimestamp != TimeStamp.unsafe(1680170400000L)
     ) {
       throw new IllegalArgumentException("Invalid timestamp for leman hard fork")
+    }
+
+    if (
+      config.network.networkId == NetworkId.AlephiumMainNet &&
+      config.network.rhoneHardForkTimestamp != TimeStamp.unsafe(1718186400000L)
+    ) {
+      throw new IllegalArgumentException("Invalid timestamp for rhone hard fork")
     }
 
     config

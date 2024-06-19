@@ -30,11 +30,12 @@ import org.alephium.flow.validation._
 import org.alephium.io.{IOError, IOResult, IOUtils}
 import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.NetworkConfig
+import org.alephium.protocol.mining.Emission
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm._
 import org.alephium.protocol.vm.StatefulVM.TxScriptExecution
 import org.alephium.serde.serialize
-import org.alephium.util.{AVector, Hex, TimeStamp}
+import org.alephium.util.{AVector, Hex, TimeStamp, U256}
 
 // scalastyle:off number.of.methods
 trait FlowUtils
@@ -157,12 +158,14 @@ trait FlowUtils
       chainIndex: ChainIndex,
       hardFork: HardFork
   ): AVector[TransactionTemplate] = {
-    val newOutputRefs = mutable.HashSet.empty[AssetOutputRef]
+    val newOutputRefs           = mutable.HashSet.empty[AssetOutputRef]
+    val isSequentialTxSupported = ALPH.isSequentialTxSupported(chainIndex, hardFork)
     txs.filter { tx =>
-      if (ALPH.isSequentialTxSupported(chainIndex, hardFork)) {
+      val isExists = Utils.unsafe(groupView.exists(tx.unsigned.inputs, newOutputRefs))
+      if (isExists && isSequentialTxSupported) {
         tx.fixedOutputRefs.foreach(newOutputRefs += _)
       }
-      Utils.unsafe(groupView.exists(tx.unsigned.inputs, newOutputRefs))
+      isExists
     }
   }
 
@@ -180,7 +183,7 @@ trait FlowUtils
       val candidates2 = filterValidInputsUnsafe(candidates1, groupView, chainIndex, hardFork)
       // we don't want any tx that conflicts with bestDeps
       val candidates3 = filterConflicts(chainIndex.from, bestDeps, candidates2, getBlockUnsafe)
-      FlowUtils.truncateTxs(candidates3, maximalTxsInOneBlock, maximalGasPerBlock)
+      FlowUtils.truncateTxs(candidates3, maximalTxsInOneBlock, getMaximalGasPerBlock(hardFork))
     }
   }
 
@@ -199,6 +202,9 @@ trait FlowUtils
       val fullTxs =
         Array.ofDim[Transaction](txTemplates.length + 1) // reserve 1 slot for coinbase tx
       txTemplates.foreachWithIndex { case (tx, index) =>
+        if (blockEnv.getHardFork().isRhoneEnabled()) {
+          blockEnv.addOutputRefFromTx(tx.unsigned)
+        }
         if (tx.unsigned.scriptOpt.isEmpty) {
           fullTxs(index) = FlowUtils.convertNonScriptTx(tx)
         }
@@ -254,6 +260,7 @@ trait FlowUtils
       uncles       <- getGhostUncles(hardFork, loosenDeps, parentHeader)
       txCandidates <- collectTransactions(chainIndex, groupView, bestDeps, hardFork)
       template <- prepareBlockFlow(
+        hardFork,
         chainIndex,
         loosenDeps,
         groupView,
@@ -276,7 +283,27 @@ trait FlowUtils
     }
   }
 
+  private def prepareCoinbase(
+      chainIndex: ChainIndex,
+      uncles: AVector[SelectedGhostUncle],
+      fullTxs: AVector[Transaction],
+      target: Target,
+      templateTs: TimeStamp,
+      miner: LockupScript.Asset
+  ): Transaction = {
+    val emission = consensusConfigs.getConsensusConfig(templateTs).emission
+    emission.reward(target, templateTs, ALPH.LaunchTimestamp) match {
+      case reward: Emission.PoW =>
+        val gasFee       = fullTxs.fold(U256.Zero)(_ addUnsafe _.gasFeeUnsafe)
+        val rewardAmount = Coinbase.powMiningReward(gasFee, reward, templateTs)
+        Transaction.powCoinbase(chainIndex, rewardAmount, miner, templateTs, uncles)
+      case _: Emission.PoLW => ???
+    }
+  }
+
+  // scalastyle:off parameter.number
   private def prepareBlockFlow(
+      hardFork: HardFork,
       chainIndex: ChainIndex,
       loosenDeps: BlockDeps,
       groupView: BlockFlowGroupView[WorldState.Cached],
@@ -286,12 +313,17 @@ trait FlowUtils
       templateTs: TimeStamp,
       miner: LockupScript.Asset
   ): IOResult[BlockFlowTemplate] = {
-    val blockEnv = BlockEnv(chainIndex, networkConfig.networkId, templateTs, target, None)
+    val blockEnv = if (hardFork.isRhoneEnabled()) {
+      val refCache = Some(mutable.HashMap.empty[AssetOutputRef, AssetOutput])
+      BlockEnv(chainIndex, networkConfig.networkId, templateTs, target, None, hardFork, refCache)
+    } else {
+      BlockEnv(chainIndex, networkConfig.networkId, templateTs, target, None, hardFork, None)
+    }
     for {
       fullTxs      <- executeTxTemplates(chainIndex, blockEnv, loosenDeps, groupView, candidates)
       depStateHash <- getDepStateHash(loosenDeps, chainIndex.from)
     } yield {
-      val coinbaseTx = Transaction.coinbase(chainIndex, fullTxs, miner, target, templateTs, uncles)
+      val coinbaseTx = prepareCoinbase(chainIndex, uncles, fullTxs, target, templateTs, miner)
       BlockFlowTemplate(
         chainIndex,
         loosenDeps.deps,
@@ -301,6 +333,24 @@ trait FlowUtils
         fullTxs :+ coinbaseTx
       )
     }
+  }
+  // scalastyle:on parameter.number
+
+  private[flow] def rebuild(
+      template: BlockFlowTemplate,
+      txs: AVector[Transaction],
+      uncles: AVector[SelectedGhostUncle],
+      miner: LockupScript.Asset
+  ): BlockFlowTemplate = {
+    val coinbase = prepareCoinbase(
+      template.index,
+      uncles,
+      txs,
+      template.target,
+      template.templateTs,
+      miner
+    )
+    template.copy(transactions = txs :+ coinbase)
   }
 
   lazy val templateValidator =
@@ -318,19 +368,19 @@ trait FlowUtils
         error match {
           case _: InvalidGhostUncleStatus =>
             logger.warn("Assemble block with empty uncles due to invalid uncles")
-            Right(template.rebuild(template.transactions.init, AVector.empty, miner))
+            Right(rebuild(template, template.transactions.init, AVector.empty, miner))
           case ExistInvalidTx(t, _) =>
             logger.warn(
               s"Remove invalid mempool tx: ${t.id.toHexString} - ${Hex.toHexString(serialize(t))}"
             )
             logger.warn("Assemble block with empty txs due to invalid txs")
             this.getMemPool(chainIndex).removeUnusedTxs(AVector(t.toTemplate))
-            val newTemplate = template.rebuild(AVector.empty, uncles, miner)
+            val newTemplate = rebuild(template, AVector.empty, uncles, miner)
             // we need to validate the template again since we don't know if uncles are valid
             validateTemplate(chainIndex, newTemplate, uncles, miner)
           case _ =>
             logger.warn(s"Assemble empty block due to error: ${error}")
-            Right(template.rebuild(AVector.empty, AVector.empty, miner))
+            Right(rebuild(template, AVector.empty, AVector.empty, miner))
         }
       case Right(_) => Right(template)
     }
@@ -386,7 +436,7 @@ trait FlowUtils
     val validator = TxValidation.build
     for {
       preOutputs <- groupView
-        .getPreOutputs(tx.unsigned.inputs)
+        .getPreOutputs(tx.unsigned.inputs, blockEnv.newOutputRefCache)
         .flatMap {
           case None =>
             // Runtime exception as we have validated the inputs in collectTransactions

@@ -2513,6 +2513,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |  }(address, tokenAmount)
          |}
          |
+         |@using(methodSelector = false)
          |Interface Swap {
          |  @using(preapprovedAssets = true, assetsInContract = true)
          |  pub fn swapAlph(buyer: Address, tokenAmount: U256) -> ()
@@ -2686,6 +2687,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |  Foo(fooId).foo{address -> ALPH: 1}()
          |}
          |
+         |@using(methodSelector = false)
          |Interface Foo {
          |  @using(preapprovedAssets = true)
          |  pub fn foo() -> ()
@@ -5104,6 +5106,24 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     }
   }
 
+  it should "load from array/struct literal" in new Fixture {
+    val code =
+      s"""
+         |struct Baz { x: U256, y: U256 }
+         |struct Foo { baz: Baz }
+         |Contract Bar() {
+         |  pub fn foo() -> () {
+         |    assert!([[0, 1], [2, 3]][1][0] == 2, 0)
+         |    assert!(([[0, 1], [2, 3]][1])[0] == 2, 0)
+         |    assert!(Foo{baz: Baz{x: 0, y: 1}}.baz.y == 1, 0)
+         |    assert!((Foo{baz: Baz{x: 0, y: 1}}.baz).y == 1, 0)
+         |  }
+         |}
+         |""".stripMargin
+
+    test(code)
+  }
+
   it should "test struct" in new Fixture {
     {
       info("Struct as contract fields")
@@ -5838,19 +5858,18 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
     }
 
     {
-      info("Assign to local map variable")
+      info("Cannot define local map variables")
       val code =
         s"""
            |Contract Foo() {
            |  mapping[U256, U256] map0
            |  mapping[U256, ByteVec] map1
            |  pub fn f() -> () {
-           |    let mut localMap0 = map0
-           |    $$localMap0 = map1$$
+           |    let mut $$localMap0$$ = map0
            |  }
            |}
            |""".stripMargin
-      testContractError(code, "Cannot assign \"Map[U256,ByteVec]\" to \"Map[U256,U256]\"")
+      testContractError(code, "Cannot define local map variable localMap0")
     }
 
     {
@@ -5956,6 +5975,63 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       Compiler.compileContractFull(code).rightValue.warnings is AVector(
         "Found unused maps in Foo: map"
       )
+    }
+
+    {
+      info("Check external caller for map update")
+      def code(statement: String, annotation: String = "") =
+        s"""
+           |Contract Foo(@unused address: Address) {
+           |  mapping[U256, U256] map
+           |  $annotation
+           |  pub fn foo() -> () {
+           |    $statement
+           |  }
+           |}
+           |""".stripMargin
+
+      val warnings = AVector(Warnings.noCheckExternalCallerMsg("Foo", "foo"))
+      val updateStatements =
+        Seq("map.insert!(address, 0, 0)", "map.remove!(address, 0)", "map[0] = 0")
+      updateStatements.foreach { statement =>
+        Compiler.compileContractFull(code(statement)).rightValue.warnings is warnings
+        Compiler
+          .compileContractFull(code(statement, "@using(checkExternalCaller = false)"))
+          .rightValue
+          .warnings is AVector.empty[String]
+      }
+      Compiler.compileContractFull(code("let _ = map[0]")).rightValue.warnings is
+        AVector.empty[String]
+      Compiler.compileContractFull(code("let _ = map.contains!(0)")).rightValue.warnings is
+        AVector.empty[String]
+    }
+
+    {
+      info("Map cannot have the same name as the contract field")
+      val code =
+        s"""
+           |Contract Foo(@unused counters: [U256; 2]) {
+           |  mapping[U256, U256] $$counters$$
+           |  pub fn foo() -> () {}
+           |}
+           |""".stripMargin
+
+      testContractError(code, "The map counters cannot have the same name as the contract field")
+    }
+
+    {
+      info("Local variable has the same name as map variable")
+      val code =
+        s"""
+           |Contract Foo() {
+           |  mapping[U256, U256] counters
+           |  pub fn foo() -> [U256; 2] {
+           |    let $$counters$$ = [0; 2]
+           |    return counters
+           |  }
+           |}
+           |""".stripMargin
+      testContractError(code, "Global variable has the same name as local variable: counters")
     }
   }
 
@@ -6654,8 +6730,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
          |}
          |""".stripMargin
     val result3 = Compiler.compileContractFull(code3).rightValue
-    result3.code.methods(0).instrs.head isnot a[MethodSelector]
-    result3.code.methods(1).instrs.head is a[MethodSelector]
+    result3.code.methods.foreach(_.instrs.head is a[MethodSelector])
   }
 
   it should "not use method selector for private functions" in {
@@ -6879,6 +6954,7 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       info("throw an error if the interface not use method selector but parents does")
       val code =
         s"""
+           |@using(methodSelector = false)
            |Interface $$Foo$$ extends Bar {
            |  pub fn foo() -> ()
            |}
@@ -7076,5 +7152,26 @@ class CompilerSpec extends AlephiumSpec with ContextGenerators {
       compiled.code.methods.take(2).foreach(_.instrs.head is a[MethodSelector])
       compiled.code.methods.last.instrs isnot a[MethodSelector]
     }
+  }
+
+  it should "throw an error if there are conflicting method selectors" in {
+    val code =
+      s"""
+         |Contract Foo() {
+         |  pub fn foo() -> () {}
+         |  pub fn $$bar() -> () {}
+         |}
+         |""".stripMargin
+
+    Compiler.compileContract(replace(code)).isRight is true
+
+    val multiContracts = Compiler.compileMultiContract(replace(code)).rightValue
+    val foo            = multiContracts.contracts.head.asInstanceOf[Ast.Contract]
+    foo.funcs(0).methodSelector = Some(foo.funcs(1).getMethodSelector(multiContracts.globalState))
+
+    val state = Compiler.State.buildFor(multiContracts, 0)(CompilerOptions.Default)
+    val error = intercept[Compiler.Error](foo.genMethods(state))
+    error.message is "Function bar's method selector conflicts with function foo's method selector. Please use a new function name."
+    error.position is code.indexOf("$")
   }
 }

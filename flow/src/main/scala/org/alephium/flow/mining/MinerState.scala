@@ -16,7 +16,6 @@
 
 package org.alephium.flow.mining
 
-import org.alephium.flow.model.MiningBlob
 import org.alephium.flow.setting.MiningSetting
 import org.alephium.protocol.config.BrokerConfig
 import org.alephium.protocol.model.ChainIndex
@@ -30,7 +29,7 @@ trait MinerState {
     Array.fill[U256](brokerConfig.groupNumPerBroker, brokerConfig.groups)(U256.Zero)
   protected val running = Array.fill(brokerConfig.groupNumPerBroker, brokerConfig.groups)(false)
   protected val pendingTasks =
-    Array.fill(brokerConfig.groupNumPerBroker)(Array.ofDim[MiningBlob](brokerConfig.groups))
+    Array.fill(brokerConfig.groupNumPerBroker)(Array.ofDim[Option[Job]](brokerConfig.groups))
 
   def getMiningCount(fromShift: Int, to: Int): U256 = miningCounts(fromShift)(to)
 
@@ -54,27 +53,31 @@ trait MinerState {
     miningCounts(fromShift)(to) = miningCounts(fromShift)(to).addUnsafe(count)
   }
 
-  @SuppressWarnings(Array("org.wartremover.warts.IterableOps"))
-  protected def pickTasks(): IndexedSeq[(Int, Int, MiningBlob)] = {
+  @SuppressWarnings(
+    Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial")
+  )
+  protected def pickTasks(): IndexedSeq[(Int, Int, Job)] = {
     val minCount   = miningCounts.map(_.min).min
     val countBound = minCount.addUnsafe(miningConfig.nonceStep)
     for {
       fromShift <- 0 until brokerConfig.groupNumPerBroker
       to        <- 0 until brokerConfig.groups
-      if miningCounts(fromShift)(to) <= countBound && !isRunning(fromShift, to)
+      if miningCounts(fromShift)(to) <= countBound &&
+        !isRunning(fromShift, to) &&
+        pendingTasks(fromShift)(to).nonEmpty
     } yield {
-      (fromShift, to, pendingTasks(fromShift)(to))
+      (fromShift, to, pendingTasks(fromShift)(to).get)
     }
   }
 
   @volatile var tasksReady: Boolean = false
   protected def startNewTasks(): Unit = {
     if (!tasksReady) {
-      tasksReady = pendingTasks.forall(_.forall(_ != null))
+      tasksReady = pendingTasks.forall(_.forall(_.nonEmpty))
     }
     if (tasksReady) {
-      pickTasks().foreach { case (fromShift, to, template) =>
-        startTask(fromShift, to, template)
+      pickTasks().foreach { case (fromShift, to, job) =>
+        startTask(fromShift, to, job)
         setRunning(fromShift, to)
       }
     }
@@ -90,6 +93,6 @@ trait MinerState {
   def startTask(
       fromShift: Int,
       to: Int,
-      template: MiningBlob
+      job: Job
   ): Unit
 }

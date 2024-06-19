@@ -293,7 +293,7 @@ trait TxUtils { Self: FlowUtils =>
     for {
       _ <- utxos.foreachE { utxo =>
         if (utxo.output.tokens.nonEmpty) {
-          Left("Not enough ALPH balance for PoLW input")
+          Left("Tokens are not allowed for PoLW input")
         } else {
           Right(())
         }
@@ -857,7 +857,7 @@ trait TxUtils { Self: FlowUtils =>
     iter(fromTipHeight + 1) match {
       case None => 0
       case Some(firstConfirmationHeight) =>
-        fromChain.maxHeightUnsafe - firstConfirmationHeight + 1
+        fromChain.maxHeightByWeightUnsafe - firstConfirmationHeight + 1
     }
   }
 
@@ -885,12 +885,12 @@ trait TxUtils { Self: FlowUtils =>
     }
 
     if (header.isGenesis) {
-      toChain.maxHeightUnsafe - ALPH.GenesisHeight + 1
+      toChain.maxHeightByWeightUnsafe - ALPH.GenesisHeight + 1
     } else {
       iter(toTipHeight + 1) match {
         case None => 0
         case Some(firstConfirmationHeight) =>
-          toChain.maxHeightUnsafe - firstConfirmationHeight + 1
+          toChain.maxHeightByWeightUnsafe - firstConfirmationHeight + 1
       }
     }
   }
@@ -995,10 +995,11 @@ trait TxUtils { Self: FlowUtils =>
     } yield ()
   }
 
-  private def checkProvidedGasAmount(gasOpt: Option[GasBox]): Either[String, Unit] = {
+  private[core] def checkProvidedGasAmount(gasOpt: Option[GasBox]): Either[String, Unit] = {
     gasOpt match {
       case None => Right(())
       case Some(gas) =>
+        val maximalGasPerTx = getMaximalGasPerTx()
         if (gas < minimalGas) {
           Left(s"Provided gas $gas too small, minimal $minimalGas")
         } else if (gas > maximalGasPerTx) {
@@ -1009,7 +1010,8 @@ trait TxUtils { Self: FlowUtils =>
     }
   }
 
-  private def checkEstimatedGasAmount(gas: GasBox): Either[String, Unit] = {
+  private[core] def checkEstimatedGasAmount(gas: GasBox): Either[String, Unit] = {
+    val maximalGasPerTx = getMaximalGasPerTx()
     if (gas > maximalGasPerTx) {
       Left(
         s"Estimated gas $gas too large, maximal $maximalGasPerTx. " ++

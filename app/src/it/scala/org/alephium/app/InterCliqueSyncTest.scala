@@ -17,10 +17,11 @@
 package org.alephium.app
 
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentLinkedQueue
 
 import scala.collection.mutable
 import scala.concurrent.Future
-import scala.util.{Failure, Random, Success}
+import scala.util.Random
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.io.Tcp
@@ -314,7 +315,7 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
   }
 
   it should "sync ghost uncle blocks" in new CliqueFixture {
-    val allSubmittedBlocks = mutable.ArrayBuffer.empty[Block]
+    val allSubmittedBlocks = new ConcurrentLinkedQueue[Block]()
 
     class TestMiner(node: InetSocketAddress) extends ExternalMinerMock(AVector(node)) {
       private val allBlocks = mutable.HashMap.empty[BlockHash, mutable.ArrayBuffer[Block]]
@@ -324,18 +325,13 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
         val minedBlocks = if (Random.nextBoolean()) blocks.drop(blocks.length / 2) else blocks
         minedBlocks.zipWithIndex.foreach { case (block, index) =>
           val delayMs = index * 500
-          val task = Future {
+          Future {
             Thread.sleep(delayMs.toLong)
             val message    = SubmitBlock(serialize(block))
             val serialized = ClientMessage.serialize(message)
             apiConnections.head.foreach(_ ! ConnectionHandler.Send(serialized))
-          }(context.dispatcher)
-          task.onComplete {
-            case Success(_) =>
-              log.info(s"Block ${block.hash.toHexString} is submitted")
-              allSubmittedBlocks.addOne(block)
-            case Failure(error) =>
-              log.error(s"Submit block ${block.shortHex} failed ${error.getMessage}")
+            allSubmittedBlocks.add(block)
+            log.info(s"Block ${block.hash.toHexString} is submitted")
           }(context.dispatcher)
         }
       }
@@ -355,24 +351,27 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
       }
     }
 
-    val configOverrides = Map(("alephium.consensus.num-zeros-at-least-in-hash", 10))
-    val clique0         = bootClique(1, configOverrides = configOverrides)
+    val configOverrides = Map[String, Any](
+      ("alephium.mining.job-cache-size-per-chain", 100),
+      ("alephium.consensus.num-zeros-at-least-in-hash", 10)
+    )
+    val clique0 = bootClique(1, configOverrides = configOverrides)
     clique0.start()
     val server0 = clique0.servers.head
     val node    = new InetSocketAddress("127.0.0.1", server0.config.network.minerApiPort)
     val miner   = server0.flowSystem.actorOf(Props(new TestMiner(node)))
     miner ! Miner.Start
 
-    Thread.sleep(60 * 1000)
+    Thread.sleep(50 * 1000)
 
-    val blocks = allSubmittedBlocks.toSeq
-    blocks.nonEmpty is true
-    blocks.foreach { block =>
+    allSubmittedBlocks.isEmpty is false
+    allSubmittedBlocks.forEach(block => {
       eventually {
         val response = request[BlockEntry](getBlock(block.hash.toHexString), clique0.masterRestPort)
-        response.toProtocol()(networkConfig).rightValue is block
+        response.toProtocol()(networkConfig).rightValue.header is block.header
       }
-    }
+      ()
+    })
 
     miner ! Miner.Stop
 

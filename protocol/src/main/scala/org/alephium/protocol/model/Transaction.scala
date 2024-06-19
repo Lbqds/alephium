@@ -21,6 +21,7 @@ import akka.util.ByteString
 import org.alephium.crypto.MerkleHashable
 import org.alephium.protocol._
 import org.alephium.protocol.config.{ConsensusConfigs, GroupConfig, NetworkConfig}
+import org.alephium.protocol.mining.Emission
 import org.alephium.protocol.model.Transaction.MerkelTx
 import org.alephium.protocol.vm.LockupScript
 import org.alephium.serde._
@@ -64,7 +65,8 @@ final case class Transaction(
     inputSignatures: AVector[Signature],
     scriptSignatures: AVector[Signature]
 ) extends TransactionAbstract
-    with MerkleHashable[Hash] {
+    with MerkleHashable[Hash]
+    with SerializationCache {
   def toMerkleTx: MerkelTx =
     MerkelTx(
       id,
@@ -126,7 +128,7 @@ final case class Transaction(
 }
 
 object Transaction {
-  implicit val serde: Serde[Transaction] =
+  private val _serde: Serde[Transaction] =
     Serde.forProduct6(
       Transaction.apply,
       t =>
@@ -139,6 +141,7 @@ object Transaction {
           t.scriptSignatures
         )
     )
+  implicit val serde: Serde[Transaction] = SerializationCache.cachedSerde(_serde)
 
   def from(
       inputs: AVector[TxInput],
@@ -255,56 +258,48 @@ object Transaction {
     }
   }
 
-  def coinbase(
-      chainIndex: ChainIndex,
-      txs: AVector[Transaction],
-      lockupScript: LockupScript.Asset,
-      target: Target,
-      blockTs: TimeStamp,
-      uncles: AVector[SelectedGhostUncle]
-  )(implicit consensusConfigs: ConsensusConfigs, networkConfig: NetworkConfig): Transaction = {
-    coinbase(chainIndex, txs, lockupScript, ByteString.empty, target, blockTs, uncles)
-  }
-
   // scalastyle:off parameter.number
-  def coinbase(
+  @SuppressWarnings(
+    Array("org.wartremover.warts.AsInstanceOf", "org.wartremover.warts.DefaultArguments")
+  )
+  def powCoinbaseForTest(
       chainIndex: ChainIndex,
       txs: AVector[Transaction],
       lockupScript: LockupScript.Asset,
-      minerData: ByteString,
       target: Target,
       blockTs: TimeStamp,
-      uncles: AVector[SelectedGhostUncle]
+      uncles: AVector[SelectedGhostUncle],
+      minerData: ByteString = ByteString.empty
   )(implicit consensusConfigs: ConsensusConfigs, networkConfig: NetworkConfig): Transaction = {
-    val gasFee = txs.fold(U256.Zero)(_ addUnsafe _.gasFeeUnsafe)
-    coinbase(chainIndex, gasFee, lockupScript, minerData, target, blockTs, uncles)
+    val consensusConfig = consensusConfigs.getConsensusConfig(blockTs)
+    val gasFee          = txs.fold(U256.Zero)(_ addUnsafe _.gasFeeUnsafe)
+    val powReward = consensusConfig.emission
+      .reward(target, blockTs, ALPH.LaunchTimestamp)
+      .asInstanceOf[Emission.PoW]
+    val rewardAmount = Coinbase.powMiningReward(gasFee, powReward, blockTs)
+    powCoinbase(chainIndex, rewardAmount, lockupScript, minerData, blockTs, uncles)
+  }
+  // scalastyle:on parameter.number
+
+  def powCoinbase(
+      chainIndex: ChainIndex,
+      rewardAmount: U256,
+      lockupScript: LockupScript.Asset,
+      blockTs: TimeStamp,
+      uncles: AVector[SelectedGhostUncle]
+  )(implicit networkConfig: NetworkConfig): Transaction = {
+    powCoinbase(chainIndex, rewardAmount, lockupScript, ByteString.empty, blockTs, uncles)
   }
 
-  def coinbase(
+  def powCoinbase(
       chainIndex: ChainIndex,
-      gasFee: U256,
-      lockupScript: LockupScript.Asset,
-      target: Target,
-      blockTs: TimeStamp,
-      uncles: AVector[SelectedGhostUncle]
-  )(implicit consensusConfigs: ConsensusConfigs, networkConfig: NetworkConfig): Transaction = {
-    coinbase(chainIndex, gasFee, lockupScript, ByteString.empty, target, blockTs, uncles)
-  }
-
-  def coinbase(
-      chainIndex: ChainIndex,
-      gasFee: U256,
+      rewardAmount: U256,
       lockupScript: LockupScript.Asset,
       minerData: ByteString,
-      target: Target,
       blockTs: TimeStamp,
       uncles: AVector[SelectedGhostUncle]
-  )(implicit consensusConfigs: ConsensusConfigs, networkConfig: NetworkConfig): Transaction = {
-    val emissionConfig = consensusConfigs.getConsensusConfig(blockTs)
-    Coinbase.build(chainIndex, gasFee, lockupScript, minerData, target, blockTs, uncles)(
-      emissionConfig,
-      networkConfig
-    )
+  )(implicit networkConfig: NetworkConfig): Transaction = {
+    Coinbase.buildPoWCoinbase(chainIndex, rewardAmount, lockupScript, minerData, blockTs, uncles)
   }
 
   def genesis(
@@ -355,7 +350,8 @@ final case class TransactionTemplate(
     unsigned: UnsignedTransaction,
     inputSignatures: AVector[Signature],
     scriptSignatures: AVector[Signature]
-) extends TransactionAbstract {
+) extends TransactionAbstract
+    with SerializationCache {
   override def outputsLength: Int = unsigned.fixedOutputs.length
 
   override def getOutput(index: Int): TxOutput = unsigned.fixedOutputs(index)
@@ -363,10 +359,11 @@ final case class TransactionTemplate(
 }
 
 object TransactionTemplate {
-  implicit val serde: Serde[TransactionTemplate] = Serde.forProduct3(
+  private val _serde: Serde[TransactionTemplate] = Serde.forProduct3(
     TransactionTemplate.apply,
     t => (t.unsigned, t.inputSignatures, t.scriptSignatures)
   )
+  implicit val serde: Serde[TransactionTemplate] = SerializationCache.cachedSerde(_serde)
 
   def from(unsigned: UnsignedTransaction, privateKey: PrivateKey): TransactionTemplate = {
     val signature = SignatureSchema.sign(unsigned.id, privateKey)

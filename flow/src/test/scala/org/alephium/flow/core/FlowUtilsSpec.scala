@@ -26,9 +26,11 @@ import org.alephium.flow.mempool.{Normal, Reorg}
 import org.alephium.flow.validation.BlockValidation
 import org.alephium.protocol.{ALPH, Generators, PrivateKey, PublicKey, SignatureSchema}
 import org.alephium.protocol.model._
-import org.alephium.protocol.vm.{GasBox, GasPrice, LockupScript, StatefulScript}
+import org.alephium.protocol.vm._
+import org.alephium.ralph.Compiler
 import org.alephium.util._
 
+// scalastyle:off file.size.limit
 class FlowUtilsSpec extends AlephiumSpec {
   it should "generate failed tx" in new FlowFixture with NoIndexModelGeneratorsLike {
     val chainIndex = ChainIndex.unsafe(0, 0)
@@ -166,6 +168,47 @@ class FlowUtilsSpec extends AlephiumSpec {
     FlowUtils.truncateTxs(txs, 3, GasBox.unsafe(gas * 2 - 1)) is txs.take(1)
   }
 
+  it should "collect txs with respect to gas limit" in new FlowFixture {
+    val chainIndex = ChainIndex.unsafe(0, 0)
+    val genesisKey = genesisKeys(chainIndex.from.value)._1
+    val txNum      = 10
+    val to         = chainIndex.to.generateKey._2
+    val txs = AVector.from(0 until txNum).map { _ =>
+      val (privateKey, publicKey) = chainIndex.to.generateKey
+      addAndCheck(blockFlow, transfer(blockFlow, genesisKey, publicKey, ALPH.alph(10)))
+      transfer(blockFlow, privateKey, to, ALPH.oneAlph).nonCoinbase.head
+    }
+
+    def prepareTxs(gas: Int) = {
+      blockFlow.grandPool.clear()
+      val gasAmount = GasBox.unsafe(gas)
+      val now       = TimeStamp.now()
+      txs.mapWithIndex { case (tx, index) =>
+        val template = tx.copy(unsigned = tx.unsigned.copy(gasAmount = gasAmount)).toTemplate
+        blockFlow.grandPool.add(chainIndex, template, now.plusMillisUnsafe(index.toLong))
+        template
+      }
+    }
+
+    def test(hardFork: HardFork, expected: AVector[TransactionTemplate]) = {
+      val groupView = blockFlow.getMutableGroupView(chainIndex.from).rightValue
+      val bestDeps  = blockFlow.getBestDeps(chainIndex.from)
+      blockFlow.collectTransactions(chainIndex, groupView, bestDeps, hardFork) isE expected
+    }
+
+    val txs0 = prepareTxs(minimalGas.value)
+    test(HardFork.Leman, txs0)
+    test(HardFork.Rhone, txs0)
+
+    val txs1 = prepareTxs(maximalGasPerBlockPreRhone.value / 5)
+    test(HardFork.Leman, txs1.take(5))
+    test(HardFork.Rhone, txs1.take(1))
+
+    val txs2 = prepareTxs(maximalGasPerBlock.value / 5)
+    test(HardFork.Leman, txs2)
+    test(HardFork.Rhone, txs2.take(5))
+  }
+
   trait CoinbaseRewardFixture extends FlowFixture {
     lazy val chainIndex = ChainIndex.unsafe(0, 0)
 
@@ -219,7 +262,7 @@ class FlowUtilsSpec extends AlephiumSpec {
       val block0 = emptyBlock(blockFlow, chainIndex)
       val block1 = emptyBlock(blockFlow, chainIndex)
       addAndCheck(blockFlow, block0, block1)
-      blockFlow.getMaxHeight(chainIndex).rightValue is 3
+      blockFlow.getMaxHeightByWeight(chainIndex).rightValue is 3
       val block2          = mineBlockTemplate(blockFlow, chainIndex)
       val hashesAtHeight3 = blockFlow.getHashes(chainIndex, 3).rightValue
       block2.ghostUncleHashes.rightValue is hashesAtHeight3.tail
@@ -238,7 +281,7 @@ class FlowUtilsSpec extends AlephiumSpec {
       val block3 = emptyBlock(blockFlow, chainIndex)
       addAndCheck(blockFlow, block2, block3)
       val block4 = mineBlockTemplate(blockFlow, chainIndex)
-      blockFlow.getMaxHeight(chainIndex).rightValue is 6
+      blockFlow.getMaxHeightByWeight(chainIndex).rightValue is 6
       val hashesAtHeight5  = blockFlow.getHashes(chainIndex, 5).rightValue
       val hashesAtHeight6  = blockFlow.getHashes(chainIndex, 6).rightValue
       val ghostUncleHashes = block4.ghostUncleHashes.rightValue
@@ -455,7 +498,7 @@ class FlowUtilsSpec extends AlephiumSpec {
       val block1 = emptyBlock(blockFlow, chainIndex)
       addAndCheck(blockFlow, block0, block1)
 
-      blockFlow.getMaxHeight(chainIndex).rightValue is 1
+      blockFlow.getMaxHeightByWeight(chainIndex).rightValue is 1
       val blockHashes = blockFlow.getHashes(chainIndex, 1).rightValue
       blockHashes.length is 2
       blockHashes.toSet is Set(block0.hash, block1.hash)
@@ -532,12 +575,12 @@ class FlowUtilsSpec extends AlephiumSpec {
     val invalidTx = block.transactions.head
     blockFlow.grandPool.add(chainIndex, invalidTx.toTemplate, TimeStamp.now())
     val (template0, _) = blockFlow.createBlockTemplate(chainIndex, miner).rightValue
-    val template1      = template0.rebuild(AVector(invalidTx), AVector.empty, miner)
+    val template1      = blockFlow.rebuild(template0, AVector(invalidTx), AVector.empty, miner)
     template1.transactions.head is invalidTx
     val template2 =
       blockFlow.validateTemplate(chainIndex, template1, AVector.empty, miner).rightValue
     template2 isnot template1
-    template2 is template1.rebuild(AVector.empty, AVector.empty, miner)
+    template2 is blockFlow.rebuild(template1, AVector.empty, AVector.empty, miner)
   }
 
   it should "rebuild block template if there are invalid uncles" in new PrepareBlockFlowFixture {
@@ -553,10 +596,10 @@ class FlowUtilsSpec extends AlephiumSpec {
     addAndCheck(blockFlow, block)
 
     val (template1, _) = blockFlow.createBlockTemplate(chainIndex, miner).rightValue
-    val template2      = template1.rebuild(template1.transactions.init, uncles, miner)
+    val template2      = blockFlow.rebuild(template1, template1.transactions.init, uncles, miner)
     val template3      = blockFlow.validateTemplate(chainIndex, template2, uncles, miner).rightValue
     template3 isnot template2
-    template3 is template2.rebuild(template2.transactions.init, AVector.empty, miner)
+    template3 is blockFlow.rebuild(template2, template2.transactions.init, AVector.empty, miner)
   }
 
   it should "rebuild block template if there are invalid txs and uncles" in new PrepareBlockFlowFixture {
@@ -574,12 +617,12 @@ class FlowUtilsSpec extends AlephiumSpec {
     blockFlow.grandPool.add(chainIndex, invalidTx.toTemplate, TimeStamp.now())
 
     val (template1, _) = blockFlow.createBlockTemplate(chainIndex, miner).rightValue
-    val template2      = template1.rebuild(AVector(invalidTx), uncles, miner)
+    val template2      = blockFlow.rebuild(template1, AVector(invalidTx), uncles, miner)
     template2.transactions.head is invalidTx
 
     val template3 = blockFlow.validateTemplate(chainIndex, template2, uncles, miner).rightValue
     template3 isnot template2
-    template3 is template2.rebuild(AVector.empty, AVector.empty, miner)
+    template3 is blockFlow.rebuild(template2, AVector.empty, AVector.empty, miner)
   }
 
   trait SequentialTxsFixture extends FlowFixture with Generators {
@@ -595,13 +638,13 @@ class FlowUtilsSpec extends AlephiumSpec {
     }
     lazy val (fromPrivateKey0, fromPublicKey0) = keys(0)
     lazy val (fromPrivateKey1, fromPublicKey1) = keys(1)
+    private var timestamp                      = TimeStamp.now()
 
     def transferTx(
         from: PrivateKey,
         to: PublicKey,
         amount: U256,
-        gasPrice: GasPrice = nonCoinbaseMinGasPrice,
-        timestamp: TimeStamp = TimeStamp.now()
+        gasPrice: GasPrice = nonCoinbaseMinGasPrice
     ): TransactionTemplate = {
       val output =
         UnsignedTransaction.TxOutputInfo(LockupScript.p2pkh(to), amount, AVector.empty, None)
@@ -616,6 +659,7 @@ class FlowUtilsSpec extends AlephiumSpec {
         .rightValue
         .rightValue
       val tx = Transaction.from(unsignedTx, from).toTemplate
+      timestamp = timestamp.plusMillisUnsafe(1)
       blockFlow.grandPool.add(chainIndex, tx, timestamp)
       tx
     }
@@ -693,6 +737,25 @@ class FlowUtilsSpec extends AlephiumSpec {
     addAndCheck(blockFlow, block)
   }
 
+  it should "not collect sequential txs if the input of the parent tx does not exist" in new SequentialTxsFixture {
+    val gasPrice          = GasPrice(nonCoinbaseMinGasPrice.value.addOneUnsafe())
+    val (_, toPublicKey0) = chainIndex.to.generateKey
+    val tx0               = transferTx(fromPrivateKey0, toPublicKey0, ALPH.alph(5))
+    val (_, toPublicKey1) = chainIndex.to.generateKey
+    val tx1               = transferTx(fromPrivateKey0, toPublicKey1, ALPH.alph(5), gasPrice)
+    val tx2               = transferTx(fromPrivateKey0, toPublicKey1, ALPH.oneAlph)
+
+    (tx1.unsigned.gasPrice.value > tx0.unsigned.gasPrice.value) is true
+    tx1.unsigned.inputs.forall(input => tx0.fixedOutputRefs.contains(input.outputRef)) is true
+    tx2.unsigned.inputs.forall(input => tx1.fixedOutputRefs.contains(input.outputRef)) is true
+    collectTxs() is AVector(tx0)
+    val block = mineFromMemPool(blockFlow, chainIndex)
+    block.nonCoinbase.map(_.toTemplate) is AVector(tx0)
+    addAndCheck(blockFlow, block)
+
+    blockFlow.getMemPool(chainIndex.from).contains(tx1.id) is true
+  }
+
   it should "not collect sequential txs for inter group blocks" in new SequentialTxsFixture {
     override lazy val chainIndex: ChainIndex =
       chainIndexGenForBroker(brokerConfig).retryUntil(!_.isIntraGroup).sample.get
@@ -709,11 +772,9 @@ class FlowUtilsSpec extends AlephiumSpec {
   }
 
   it should "collect all sequential txs" in new SequentialTxsFixture {
-    val now = TimeStamp.now()
-    val txs = AVector.from((0 until 15).map { index =>
+    val txs = AVector.from((0 until 15).map { _ =>
       val (_, toPublicKey) = chainIndex.to.generateKey
-      val ts               = now.plusMillisUnsafe(index.toLong)
-      transferTx(fromPrivateKey0, toPublicKey, ALPH.alph(1), nonCoinbaseMinGasPrice, ts)
+      transferTx(fromPrivateKey0, toPublicKey, ALPH.alph(1), nonCoinbaseMinGasPrice)
     })
 
     collectTxs() is txs
@@ -760,5 +821,100 @@ class FlowUtilsSpec extends AlephiumSpec {
     val block = mineFromMemPool(blockFlow, chainIndex)
     addAndCheck(blockFlow, block)
     block.nonCoinbase.map(_.toTemplate).toSet is txs.toSet
+  }
+
+  it should "not collect sequential txs if the input of the source tx from other chains" in new FlowFixture {
+    override val configValues = Map(("alephium.broker.broker-num", 1))
+
+    val chainIndex0               = ChainIndex.unsafe(0, 0)
+    val (privateKey0, publicKey0) = chainIndex0.from.generateKey
+    val block0 = transfer(blockFlow, genesisKeys(0)._1, publicKey0, ALPH.alph(10))
+    addAndCheck(blockFlow, block0)
+
+    val chainIndex1     = ChainIndex.unsafe(0, 1)
+    val (_, publicKey1) = GroupIndex.unsafe(1).generateKey
+    val tx0 = transfer(blockFlow, privateKey0, publicKey1, ALPH.oneAlph).nonCoinbase.head.toTemplate
+    val now = TimeStamp.now()
+    blockFlow.grandPool.add(chainIndex1, tx0, now)
+
+    val (_, publicKey2) = chainIndex0.from.generateKey
+    var sourceTx        = tx0
+    val sequentialTxs = AVector.from(0 until 5).map { index =>
+      val tx =
+        transfer(blockFlow, privateKey0, publicKey2, ALPH.oneAlph).nonCoinbase.head.toTemplate
+      tx.unsigned.inputs.forall(input => sourceTx.fixedOutputRefs.contains(input.outputRef)) is true
+      blockFlow.grandPool.add(chainIndex0, tx, now.plusMillisUnsafe(index.toLong))
+      sourceTx = tx
+      tx
+    }
+
+    val mempool      = blockFlow.grandPool.getMemPool(chainIndex0.from)
+    val collectedTxs = mempool.collectAllTxs(chainIndex0, Int.MaxValue)
+    collectedTxs is sequentialTxs
+
+    val template0 =
+      blockFlow.prepareBlockFlow(chainIndex0, LockupScript.p2pkh(publicKey2)).rightValue
+    template0.transactions.length is 1 // coinbase tx
+
+    addAndCheck(blockFlow, mineFromMemPool(blockFlow, chainIndex1))
+
+    val template1 =
+      blockFlow.prepareBlockFlow(chainIndex0, LockupScript.p2pkh(publicKey2)).rightValue
+    template1.transactions.init.map(_.toTemplate) is sequentialTxs
+    addAndCheck(blockFlow, mine(blockFlow, template1))
+  }
+
+  it should "support sequential script txs in rhone" in new FlowFixture {
+    networkConfig.getHardFork(TimeStamp.now()) is HardFork.Rhone
+    val chainIndex              = ChainIndex.unsafe(0, 0)
+    val (privateKey, publicKey) = chainIndex.from.generateKey
+    val lockupScript            = LockupScript.p2pkh(publicKey)
+    val unlockScript            = UnlockScript.p2pkh(publicKey)
+    val genesisKey              = genesisKeys(chainIndex.from.value)._1
+    addAndCheck(blockFlow, transfer(blockFlow, genesisKey, publicKey, ALPH.alph(5)))
+    val utxos = blockFlow.getUsableUtxos(lockupScript, Int.MaxValue).rightValue
+    utxos.length is 1
+
+    val script = Compiler.compileTxScript("TxScript Main { let _ = 0 }").rightValue
+    val unsignedTx0 = UnsignedTransaction
+      .buildScriptTx(
+        script,
+        lockupScript,
+        unlockScript,
+        utxos.map(info => (info.ref, info.output)),
+        ALPH.cent(1),
+        AVector.empty,
+        minimalGas,
+        nonCoinbaseMinGasPrice
+      )
+      .rightValue
+    unsignedTx0.fixedOutputs.length is 1
+
+    val unsignedTx1 = UnsignedTransaction
+      .buildScriptTx(
+        script,
+        lockupScript,
+        unlockScript,
+        unsignedTx0.fixedOutputRefs.mapWithIndex { case (ref, index) =>
+          (ref, unsignedTx0.fixedOutputs(index))
+        },
+        ALPH.cent(1),
+        AVector.empty,
+        minimalGas,
+        nonCoinbaseMinGasPrice
+      )
+      .rightValue
+
+    val tx0 = Transaction.from(unsignedTx0, privateKey).toTemplate
+    val tx1 = Transaction.from(unsignedTx1, privateKey).toTemplate
+    val now = TimeStamp.now()
+    blockFlow.grandPool.add(chainIndex, tx0, now)
+    blockFlow.grandPool.add(chainIndex, tx1, now.plusMillisUnsafe(1))
+    val txs = AVector(tx0, tx1)
+
+    val block = mineBlockTemplate(blockFlow, chainIndex)
+    block.transactions.foreach(_.scriptExecutionOk is true)
+    block.nonCoinbase.map(_.toTemplate) is txs
+    addAndCheck(blockFlow, block)
   }
 }
