@@ -28,9 +28,9 @@ import com.typesafe.scalalogging.StrictLogging
 
 import org.alephium.app.{CpuSoloMiner, Server}
 import org.alephium.flow.network.InterCliqueManager
-import org.alephium.flow.setting.AlephiumConfig
+import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.protocol.config.GroupConfig
-import org.alephium.util.{Duration, TimeStamp}
+import org.alephium.util.{Duration, Env, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.ThreadSleep"))
@@ -103,8 +103,12 @@ object Chain00Miner extends App {
   import LocalCluster._
 
   private val rootPath = getNodeRootPath(0)
-  private val typesafeConfig =
-    getConfig(TimeStamp.now(), 19973, 22973, 21973, 20973, rootPath, Seq.empty)
+  private val typesafeConfig = Configs.parseConfig(
+    Env.Prod,
+    rootPath,
+    overwrite = true,
+    predefined = getConfig(TimeStamp.now(), 19973, 22973, 21973, 20973, rootPath, Seq.empty)
+  )
   private val config = AlephiumConfig.load(typesafeConfig)
   private val system = ActorSystem("chain00-miner", typesafeConfig)
   new CpuSoloMiner(config, system, args.headOption, true)
