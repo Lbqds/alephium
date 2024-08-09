@@ -16,7 +16,7 @@
 
 package org.alephium.ralph
 
-import org.alephium.protocol.vm.Val
+import org.alephium.protocol.vm.{StatelessContext, Val}
 import org.alephium.util.AVector
 
 sealed trait Type extends Ast.Positioned {
@@ -26,15 +26,14 @@ sealed trait Type extends Ast.Positioned {
   def signature: String = toVal.toString
 
   def isPrimitive: Boolean = this match {
-    case _: Type.FixedSizeArray | _: Type.Struct | _: Type.NamedType | _: Type.Contract |
-        _: Type.Map =>
+    case _: Type.ArrayType | _: Type.Struct | _: Type.NamedType | _: Type.Contract | _: Type.Map =>
       false
     case _ => true
   }
 
   def isArrayType: Boolean = this match {
-    case _: Type.FixedSizeArray => true
-    case _                      => false
+    case _: Type.ArrayType => true
+    case _                 => false
   }
 
   def isStructType: Boolean = this match {
@@ -70,7 +69,9 @@ object Type {
   case object U256    extends Type { def toVal: Val.Type = Val.U256    }
   case object ByteVec extends Type { def toVal: Val.Type = Val.ByteVec }
   case object Address extends Type { def toVal: Val.Type = Val.Address }
-  final case class FixedSizeArray(baseType: Type, size: Int) extends Type {
+
+  sealed trait ArrayType extends Type
+  final case class FixedSizeArray(baseType: Type, size: Int) extends ArrayType {
     override def toVal: Val.Type = Val.FixedSizeArray(baseType.toVal, size)
 
     @scala.annotation.tailrec
@@ -80,6 +81,10 @@ object Type {
     }
 
     override def signature: String = s"[${baseType.signature};$size]"
+  }
+  final case class UnresolvedArray[Ctx <: StatelessContext](baseType: Type, size: Ast.Expr[Ctx])
+      extends ArrayType {
+    def toVal: Val.Type = ???
   }
 
   final case class NamedType(id: Ast.TypeId) extends Type {
@@ -99,8 +104,9 @@ object Type {
   }
 
   final case class Contract(id: Ast.TypeId) extends Type {
-    def toVal: Val.Type           = Val.ByteVec
-    override def toString: String = id.name
+    def toVal: Val.Type            = Val.ByteVec
+    override def toString: String  = id.name
+    override def signature: String = id.name
   }
 
   // The naming is more specific than Bottom or Nothing

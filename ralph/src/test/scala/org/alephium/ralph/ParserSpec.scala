@@ -134,11 +134,9 @@ class ParserSpec(fileURI: Option[java.net.URI]) extends AlephiumSpec {
           (
             Ident("bar"),
             Some(
-              CreateArrayExpr(
-                Seq(
-                  StructCtor(TypeId("Bar"), Seq((Ident("y"), Some(Const(Val.False))))),
-                  StructCtor(TypeId("Bar"), Seq((Ident("y"), Some(Const(Val.False)))))
-                )
+              CreateArrayExpr2(
+                StructCtor(TypeId("Bar"), Seq((Ident("y"), Some(Const(Val.False))))),
+                Const(Val.U256(U256.Two))
               )
             )
           )
@@ -798,13 +796,14 @@ class ParserSpec(fileURI: Option[java.net.URI]) extends AlephiumSpec {
           )
         )
       ),
-      "[a, a]" -> Ast.CreateArrayExpr(Seq(Variable(Ast.Ident("a")), Variable(Ast.Ident("a")))),
-      "[a; 2]" -> Ast.CreateArrayExpr(Seq(Variable(Ast.Ident("a")), Variable(Ast.Ident("a")))),
-      "[[1, 1], [1, 1]]" -> Ast.CreateArrayExpr(
-        Seq.fill(2)(Ast.CreateArrayExpr(Seq.fill(2)(Ast.Const(Val.U256(U256.unsafe(1))))))
+      "[a, a]" -> Ast.CreateArrayExpr1(Seq(Variable(Ast.Ident("a")), Variable(Ast.Ident("a")))),
+      "[a; 2]" -> Ast.CreateArrayExpr2(Variable(Ast.Ident("a")), Const(Val.U256(U256.Two))),
+      "[[1, 1], [1, 1]]" -> Ast.CreateArrayExpr1(
+        Seq.fill(2)(Ast.CreateArrayExpr1(Seq.fill(2)(Ast.Const(Val.U256(U256.One)))))
       ),
-      "[[1; 2]; 2]" -> Ast.CreateArrayExpr(
-        Seq.fill(2)(Ast.CreateArrayExpr(Seq.fill(2)(Ast.Const(Val.U256(U256.unsafe(1))))))
+      "[[1; 2]; 2]" -> Ast.CreateArrayExpr2(
+        Ast.CreateArrayExpr2(Const(Val.U256(U256.One)), Const(Val.U256(U256.Two))),
+        Const(Val.U256(U256.Two))
       )
     )
 
@@ -2112,12 +2111,12 @@ class ParserSpec(fileURI: Option[java.net.URI]) extends AlephiumSpec {
           StructField(
             Ident("account"),
             false,
-            Type.NamedType(TypeId("Foo"))
+            Type.Struct(TypeId("Foo"))
           ),
           StructField(
             Ident("accounts"),
             true,
-            Type.FixedSizeArray(Type.NamedType(TypeId("Foo")), 2)
+            Type.FixedSizeArray(Type.Struct(TypeId("Foo")), 2)
           )
         )
       )

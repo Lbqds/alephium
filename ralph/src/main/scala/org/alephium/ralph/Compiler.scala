@@ -261,11 +261,12 @@ object Compiler {
       usePreapprovedAssets: Boolean,
       useAssetsInContract: Ast.ContractAssetsAnnotation,
       useUpdateFields: Boolean,
-      argsType: Seq[Type],
-      returnType: Seq[Type],
       index: Byte
   ) extends ContractFunc[Ctx] {
     def name: String = funcDef.name
+
+    def argsType: Seq[Type]   = funcDef.args.map(_.tpe)
+    def returnType: Seq[Type] = funcDef.rtypes
 
     override def getReturnType[C <: Ctx](
         inputType: Seq[Type],
@@ -323,8 +324,6 @@ object Compiler {
         func.usePreapprovedAssets,
         func.useAssetsInContract,
         func.useUpdateFields,
-        func.args.map(_.tpe),
-        func.rtypes,
         index
       )
     }
@@ -986,9 +985,22 @@ object Compiler {
 
     def genStoreCode(offset: VarOffset[Ctx], isLocal: Boolean): Seq[Instr[Ctx]]
 
-    def resolveType(ident: Ast.Ident): Type  = globalState.resolveType(getVariable(ident).tpe)
-    @inline def resolveType(tpe: Type): Type = globalState.resolveType(tpe)
-    @inline def resolveTypes(types: Seq[Type]): Seq[Type] = globalState.resolveTypes(types)
+    @inline def resolveType(ident: Ast.Ident): Type = resolveType(getVariable(ident).tpe)
+
+    @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
+    @inline def resolveType(tpe: Type): Type = {
+      val resolvedType = tpe match {
+        case t: Type.UnresolvedArray[Ctx @unchecked] =>
+          Type.FixedSizeArray(resolveType(t.baseType), calcArraySize(t.size))
+        case Type.FixedSizeArray(baseType, size) =>
+          Type.FixedSizeArray(resolveType(baseType), size)
+        case _ => globalState.resolveType(tpe)
+      }
+      if (resolvedType.sourceIndex.isEmpty) resolvedType.atSourceIndex(tpe.sourceIndex)
+      resolvedType
+    }
+
+    @inline def resolveTypes(types: Seq[Type]): Seq[Type] = types.map(resolveType)
     @inline def flattenTypeLength(types: Seq[Type]): Int  = globalState.flattenTypeLength(types)
 
     @inline def flattenTypeMutability(tpe: Type, isMutable: Boolean): Seq[Boolean] =
@@ -1086,15 +1098,25 @@ object Compiler {
       )
     }
 
+    def checkArgument(arg: Ast.Argument): Type = {
+      val resolvedType = resolveType(arg.tpe)
+      checkArgumentType(resolvedType)
+      arg.tpe = resolvedType
+      resolvedType
+    }
+
     def checkArguments(args: Seq[Ast.Argument]): Unit = {
-      args.foreach(_.tpe match {
-        case c: Type.NamedType =>
-          resolveType(c) match {
-            case c: Type.Contract => checkContractType(c.id)
-            case _                =>
-          }
-        case _ =>
-      })
+      args.foreach(checkArgument)
+    }
+
+    @scala.annotation.tailrec
+    private def checkArgumentType(tpe: Type): Unit = {
+      assume(!tpe.isMapType)
+      tpe match {
+        case Type.Contract(typeId)       => checkContractType(typeId)
+        case Type.FixedSizeArray(tpe, _) => checkArgumentType(tpe)
+        case _                           => ()
+      }
     }
 
     def checkContractType(typeId: Ast.TypeId): Unit = {

@@ -84,7 +84,7 @@ object Ast {
   final case class TypeId(name: String)                     extends Positioned
   final case class FuncId(name: String, isBuiltIn: Boolean) extends Positioned
 
-  final case class Argument(ident: Ident, tpe: Type, isMutable: Boolean, isUnused: Boolean)
+  final case class Argument(ident: Ident, var tpe: Type, isMutable: Boolean, isUnused: Boolean)
       extends Positioned {
     def signature: String = {
       val prefix = if (isMutable) "mut " else ""
@@ -226,24 +226,31 @@ object Ast {
       Seq(v.toConstInstr)
     }
   }
-  final case class CreateArrayExpr[Ctx <: StatelessContext](elements: Seq[Expr[Ctx]])
-      extends Expr[Ctx] {
-    override def _getType(state: Compiler.State[Ctx]): Seq[Type.FixedSizeArray] = {
-      assume(elements.nonEmpty)
-      val baseType = elements(0).getType(state)
+  sealed trait CreateArrayExpr[Ctx <: StatelessContext] extends Expr[Ctx] {
+    def elementExpr: Expr[Ctx]
+    protected def getElementType(state: Compiler.State[Ctx]): Type = {
+      val baseType = elementExpr.getType(state)
       if (baseType.length != 1) {
         throw Compiler.Error(
-          s"Expected single type for array element, got ${quote(elements)}",
+          s"Expected single type for array element, got ${quote(baseType)}",
           sourceIndex
         )
       }
-      if (elements.drop(0).exists(_.getType(state) != baseType)) {
-        throw Compiler.Error(
-          s"Array elements should have same type, got ${quote(elements)}",
-          sourceIndex
-        )
+      baseType(0)
+    }
+  }
+  final case class CreateArrayExpr1[Ctx <: StatelessContext](elements: Seq[Expr[Ctx]])
+      extends CreateArrayExpr[Ctx] {
+    def elementExpr: Expr[Ctx] = {
+      assume(elements.nonEmpty)
+      elements(0)
+    }
+    override def _getType(state: Compiler.State[Ctx]): Seq[Type.FixedSizeArray] = {
+      val elementType = getElementType(state)
+      if (elements.drop(0).exists(_.getType(state) != Seq(elementType))) {
+        throw Compiler.Error(s"Array elements should have same type", sourceIndex)
       }
-      Seq(Type.FixedSizeArray(baseType(0), elements.size))
+      Seq(Type.FixedSizeArray(elementType, elements.size))
     }
 
     override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
@@ -251,6 +258,30 @@ object Ast {
     }
     override def reset(): Unit = {
       elements.foreach(_.reset())
+      super.reset()
+    }
+  }
+  final case class CreateArrayExpr2[Ctx <: StatelessContext](
+      elementExpr: Expr[Ctx],
+      sizeExpr: Expr[Ctx]
+  ) extends CreateArrayExpr[Ctx] {
+    private var size: Option[Int] = None
+
+    override def _getType(state: Compiler.State[Ctx]): Seq[Type.FixedSizeArray] = {
+      val elementType = getElementType(state)
+      val arraySize   = state.calcArraySize(sizeExpr)
+      size = Some(arraySize)
+      Seq(Type.FixedSizeArray(elementType, arraySize))
+    }
+
+    override def genCode(state: Compiler.State[Ctx]): Seq[Instr[Ctx]] = {
+      val arraySize = size.getOrElse(state.calcArraySize(sizeExpr))
+      Seq.fill(arraySize)(elementExpr).flatMap(_.genCode(state))
+    }
+    override def reset(): Unit = {
+      size = None
+      elementExpr.reset()
+      sizeExpr.reset()
       super.reset()
     }
   }
@@ -897,7 +928,7 @@ object Ast {
     }
   }
 
-  final case class StructField(ident: Ident, isMutable: Boolean, tpe: Type) extends UniqueDef {
+  final case class StructField(ident: Ident, isMutable: Boolean, var tpe: Type) extends UniqueDef {
     def name: String      = ident.name
     def signature: String = s"${ident.name}:${tpe.signature}"
   }
@@ -984,7 +1015,7 @@ object Ast {
     }
   }
 
-  final case class MapDef(ident: Ident, tpe: Type.Map) extends UniqueDef with Positioned {
+  final case class MapDef(ident: Ident, var tpe: Type.Map) extends UniqueDef with Positioned {
     def name: String = ident.name
   }
 
@@ -1202,7 +1233,7 @@ object Ast {
       useUpdateFields: Boolean,
       useMethodIndex: Option[Int],
       args: Seq[Argument],
-      rtypes: Seq[Type],
+      var rtypes: Seq[Type],
       bodyOpt: Option[Seq[Statement[Ctx]]]
   ) extends UniqueDef {
     def name: String              = id.name
@@ -1212,15 +1243,17 @@ object Ast {
     private var funcAccessedVarsCache: Option[Set[Compiler.AccessVariable]] = None
 
     private[ralph] var methodSelector: Option[Method.Selector] = None
+    @SuppressWarnings(Array("org.wartremover.warts.ToString"))
     def getMethodSelector(globalState: GlobalState[_]): Method.Selector = {
       methodSelector match {
         case Some(selector) => selector
         case None =>
           val argTypes = args.view
             .flatMap(arg => globalState.flattenType(arg.tpe))
-            .map(_.signature)
+            .map(_.toVal.toString)
             .mkString(",")
-          val retTypes = rtypes.view.flatMap(globalState.flattenType).map(_.signature).mkString(",")
+          val retTypes =
+            rtypes.view.flatMap(globalState.flattenType).map(_.toVal.toString).mkString(",")
           val bytes    = ByteString.fromString(s"$name($argTypes)->($retTypes)")
           val selector = Method.Selector(DjbHash.intHash(bytes))
           methodSelector = Some(selector)
@@ -1291,7 +1324,7 @@ object Ast {
         case Some(IfElseStatement(ifBranches, elseBranchOpt)) =>
           ifBranches.foreach(branch => checkRetTypes(branch.body.lastOption))
           checkRetTypes(elseBranchOpt.flatMap(_.body.lastOption))
-        case Some(call: FuncCall[_]) if call.id.name == "panic" && call.id.isBuiltIn == true => ()
+        case Some(call: FuncCall[_]) if call.id.name == "panic" && call.id.isBuiltIn => ()
         case _ =>
           throw Compiler.Error(
             s"Expected return statement for function ${quote(id.name)}",
@@ -1304,9 +1337,9 @@ object Ast {
       state.setFuncScope(id)
       state.checkArguments(args)
       args.foreach { arg =>
-        val argTpe = state.resolveType(arg.tpe)
-        state.addLocalVariable(arg.ident, argTpe, arg.isMutable, arg.isUnused, isGenerated = false)
+        state.addLocalVariable(arg.ident, arg.tpe, arg.isMutable, arg.isUnused, isGenerated = false)
       }
+      rtypes = rtypes.map(state.resolveType)
       funcAccessedVarsCache match {
         case Some(vars) => // the function has been compiled before
           state.addAccessedVars(vars)
@@ -1973,6 +2006,8 @@ object Ast {
           }
         case Type.FixedSizeArray(baseType, size) =>
           Type.FixedSizeArray(resolveType(baseType), size)
+        case t: Type.UnresolvedArray[Ctx @unchecked] =>
+          Type.FixedSizeArray(resolveType(t.baseType), calcArraySize(t.size))
         case Type.Map(key, value) =>
           Type.Map(resolveType(key), resolveType(value))
         case _ => tpe
@@ -1981,11 +2016,12 @@ object Ast {
 
     @inline def resolveType(tpe: Type): Type = {
       tpe match {
-        case _: Type.NamedType | _: Type.FixedSizeArray | _: Type.Map =>
+        case _: Type.NamedType | _: Type.ArrayType | _: Type.Map =>
           typeCache.get(tpe) match {
             case Some(tpe) => tpe
             case None =>
               val resolvedType = _resolveType(tpe)
+              if (resolvedType.sourceIndex.isEmpty) resolvedType.atSourceIndex(tpe.sourceIndex)
               typeCache.update(tpe, resolvedType)
               resolvedType
           }
@@ -2059,6 +2095,7 @@ object Ast {
       val globalState = GlobalState[Ctx](structs.toSeq, constantVars.toSeq, enums.toSeq)
       globalState.addConstants(globalState.constantVars)
       globalState.addEnums(globalState.enums)
+      structs.foreach(s => s.fields.foreach(f => f.tpe = globalState.resolveType(f.tpe)))
       globalState
     }
   }
@@ -2105,7 +2142,7 @@ object Ast {
 
     private def addTemplateVars(state: Compiler.State[Ctx]): Unit = {
       templateVars.foreach { templateVar =>
-        val tpe   = state.resolveType(templateVar.tpe)
+        val tpe   = state.checkArgument(templateVar)
         val ident = TemplateVar.rename(templateVar.ident, tpe)
         state.addTemplateVariable(ident, tpe)
       }
@@ -2123,7 +2160,7 @@ object Ast {
       fields.foreach { field =>
         state.addFieldVariable(
           field.ident,
-          state.resolveType(field.tpe),
+          field.tpe,
           field.isMutable,
           field.isUnused,
           isGenerated = false
@@ -2360,18 +2397,22 @@ object Ast {
     }
 
     private def checkFields(state: Compiler.State[StatefulContext]): Unit = {
-      fields.foreach { case field @ Argument(fieldId, tpe, isFieldMutable, _) =>
-        state.resolveType(tpe) match {
+      fields.foreach { field =>
+        val resolvedType = state.resolveType(field.tpe)
+        resolvedType match {
           case Type.Struct(structId) =>
-            val isStructImmutable = state.flattenTypeMutability(tpe, isMutable = true).forall(!_)
-            if (isFieldMutable && isStructImmutable) {
+            val isStructImmutable =
+              state.flattenTypeMutability(resolvedType, isMutable = true).forall(!_)
+            if (field.isMutable && isStructImmutable) {
+              val scopedName = s"${ident.name}.${field.ident.name}"
               throw Compiler.Error(
-                s"The struct ${structId.name} is immutable, please remove the `mut` from ${ident.name}.${fieldId.name}",
+                s"The struct ${structId.name} is immutable, please remove the `mut` from $scopedName",
                 field.sourceIndex
               )
             }
           case _ => ()
         }
+        field.tpe = resolvedType
       }
     }
 
@@ -2386,8 +2427,8 @@ object Ast {
         case _ => ()
       }
       maps.view.zipWithIndex.foreach { case (m, index) =>
-        val mapType = Type.Map(m.tpe.key, state.resolveType(m.tpe.value))
-        state.addMapVar(m.ident, mapType, index)
+        m.tpe = Type.Map(m.tpe.key, state.resolveType(m.tpe.value))
+        state.addMapVar(m.ident, m.tpe, index)
       }
     }
 
