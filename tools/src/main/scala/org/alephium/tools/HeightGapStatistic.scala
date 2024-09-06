@@ -46,7 +46,7 @@ object HeightGapStatistic extends App {
     Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
-  private val heightGap   = 40000
+  private val heightGap   = 37800
   private var allBlocks   = 0
   private var uncleBlocks = 0
 
@@ -84,7 +84,7 @@ object HeightGapStatistic extends App {
     s"========== all blocks: $allBlocks, uncle blocks: $uncleBlocks, uncle rate: ${uncleBlocks.toDouble / allBlocks.toDouble}\n"
   )
 
-  miners.foreach { case (lockupScript, state) =>
+  miners.toSeq.sortBy(_._2.uncleRate).reverse.foreach { case (lockupScript, state) =>
     val address = Address.from(lockupScript)
     print(
       s"${address.toBase58}, all blocks: ${state.all}, uncle blocks: ${state.uncles}, uncle rate: ${state.uncleRate}\n"
