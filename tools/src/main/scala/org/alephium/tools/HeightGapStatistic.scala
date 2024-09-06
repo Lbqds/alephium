@@ -22,9 +22,9 @@ import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.io.Storages
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
-import org.alephium.protocol.model.Address
+import org.alephium.protocol.model.{Address, ChainIndex}
 import org.alephium.protocol.vm.LockupScript
-import org.alephium.util.{Env, Files}
+import org.alephium.util.{Duration, Env, Files, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
@@ -47,16 +47,28 @@ object HeightGapStatistic extends App {
     Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
-  private val heightGap   = 37800
   private var allBlocks   = 0
   private var uncleBlocks = 0
+
+  private val now    = TimeStamp.now()
+  private val fromTs = now.minusUnsafe(Duration.ofHoursUnsafe(6L))
+
+  private val fromHeights = mutable.Map.empty[ChainIndex, Int]
+
+  blockFlow.getHeightedBlocks(fromTs, fromTs.plusMinutesUnsafe(5L)) match {
+    case Right(blocks) =>
+      blocks.foreach { case (chainIndex, bs) =>
+        fromHeights(chainIndex) = bs.head._2
+      }
+    case Left(error) => print(s"failed to get heighted blocks, error: ${error}")
+  }
 
   private val miners = mutable.Map.empty[LockupScript, BlockState]
 
   config.broker.chainIndexes.foreach { chainIndex =>
     blockFlow.getMaxHeightByWeight(chainIndex) match {
       case Right(maxHeight) =>
-        val fromHeight = maxHeight - heightGap
+        val fromHeight = fromHeights(chainIndex)
         print(s"$chainIndex, max height: $maxHeight, from: $fromHeight\n")
         val chain = blockFlow.getBlockChain(chainIndex)
         (fromHeight to maxHeight).foreach { height =>
