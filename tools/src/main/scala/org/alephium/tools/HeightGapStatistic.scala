@@ -86,7 +86,7 @@ object HeightGapStatistic extends App {
   )
 
   var allBlockShares: Double = 0.0
-  miners.toSeq.sortBy(_._2.uncleRate).reverse.foreach { case (lockupScript, state) =>
+  miners.toSeq.sortBy(_._2.blockRate(allBlocks)).reverse.foreach { case (lockupScript, state) =>
     val address    = Address.from(lockupScript)
     val uncleRate  = f"${state.uncleRate}%.6f"
     val blockRatio = f"${state.blockRate(allBlocks)}%.6f"
