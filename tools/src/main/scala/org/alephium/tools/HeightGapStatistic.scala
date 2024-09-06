@@ -16,15 +16,27 @@
 
 package org.alephium.tools
 
+import scala.collection.mutable
+
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.io.Storages
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
+import org.alephium.protocol.model.Address
+import org.alephium.protocol.vm.LockupScript
 import org.alephium.util.{Env, Files}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
 object HeightGapStatistic extends App {
+  final class BlockState(var all: Int, var uncles: Int) {
+    def increase(isUncleBlock: Boolean): Unit = {
+      all += 1
+      if (isUncleBlock) uncles += 1
+    }
+    def uncleRate: Double = uncles.toDouble / all.toDouble
+  }
+
   // private val rootPath       = Files.homeDir.resolve(".alephium-testnet")
   private val rootPath       = Files.homeDir.resolve(".alephium")
   private val typesafeConfig = Configs.parseConfigAndValidate(Env.Prod, rootPath, overwrite = true)
@@ -34,9 +46,11 @@ object HeightGapStatistic extends App {
     Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
-  private val heightGap   = 37800
+  private val heightGap   = 40000
   private var allBlocks   = 0
   private var uncleBlocks = 0
+
+  private val miners = mutable.Map.empty[LockupScript, BlockState]
 
   config.broker.chainIndexes.foreach { chainIndex =>
     blockFlow.getMaxHeightByWeight(chainIndex) match {
@@ -48,6 +62,17 @@ object HeightGapStatistic extends App {
           val hashes = chain.getHashesUnsafe(height)
           allBlocks += hashes.length
           uncleBlocks += hashes.length - 1
+          hashes.foreachWithIndex { case (blockHash, index) =>
+            val isUncleBlock = index != 0
+            val block        = chain.getBlockUnsafe(blockHash)
+            miners.get(block.minerLockupScript) match {
+              case Some(state) => state.increase(isUncleBlock)
+              case None =>
+                val state = new BlockState(0, 0)
+                state.increase(isUncleBlock)
+                miners(block.minerLockupScript) = state
+            }
+          }
         }
         print(s"$chainIndex, all blocks: $allBlocks, uncle blocks: $uncleBlocks\n")
       case Left(error) =>
@@ -58,6 +83,13 @@ object HeightGapStatistic extends App {
   print(
     s"========== all blocks: $allBlocks, uncle blocks: $uncleBlocks, uncle rate: ${uncleBlocks.toDouble / allBlocks.toDouble}\n"
   )
+
+  miners.foreach { case (lockupScript, state) =>
+    val address = Address.from(lockupScript)
+    print(
+      s"${address.toBase58}, all blocks: ${state.all}, uncle blocks: ${state.uncles}, uncle rate: ${state.uncleRate}\n"
+    )
+  }
 
   storages.close() match {
     case Left(error) => throw error
