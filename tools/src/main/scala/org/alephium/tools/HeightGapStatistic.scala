@@ -16,13 +16,11 @@
 
 package org.alephium.tools
 
-import scala.collection.mutable
-
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.io.Storages
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
-import org.alephium.util.{Duration, Env, Files, TimeStamp}
+import org.alephium.util.{Env, Files}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
@@ -36,37 +34,30 @@ object HeightGapStatistic extends App {
     Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
-  private val toTimeStamp   = TimeStamp.now()
-  private val fromTimeStamp = toTimeStamp.minusUnsafe(Duration.ofDaysUnsafe(5))
+  private val heightGap   = 37800
+  private var allBlocks   = 0
+  private var uncleBlocks = 0
 
-  blockFlow.getHeightedBlocks(fromTimeStamp, toTimeStamp) match {
-    case Right(allBlocks) =>
-      allBlocks.foreach { case (chainIndex, blocksWithHeight) =>
-        var gapCountLargeThan8 = 0
-        val heightGaps         = mutable.HashMap.empty[Int, Int]
-        blocksWithHeight.foreach { case (block, _) =>
-          val commonIntraGroupDeps =
-            blockFlow.calCommonIntraGroupDepsUnsafe(block.blockDeps, chainIndex.from)
-          val (_, _, oldestTs) =
-            blockFlow.getDiffAndTimeSpanUnsafe(commonIntraGroupDeps)(config.consensus.rhone)
-          val chainDep  = block.blockDeps.getOutDep(chainIndex.to)
-          val heightGap = blockFlow.calHeightDiffUnsafe(chainDep, oldestTs)
-          heightGaps.get(heightGap) match {
-            case Some(count) => heightGaps.update(heightGap, count + 1)
-            case None        => heightGaps.addOne(heightGap -> 1)
-          }
-          if (heightGap > 8) gapCountLargeThan8 += 1
+  config.broker.chainIndexes.foreach { chainIndex =>
+    blockFlow.getMaxHeightByWeight(chainIndex) match {
+      case Right(maxHeight) =>
+        val fromHeight = maxHeight - heightGap
+        print(s"$chainIndex, max height: $maxHeight, from: $fromHeight\n")
+        val chain = blockFlow.getBlockChain(chainIndex)
+        (fromHeight to maxHeight).foreach { height =>
+          val hashes = chain.getHashesUnsafe(height)
+          allBlocks += hashes.length
+          uncleBlocks += hashes.length - 1
         }
-        val ratio = s"$gapCountLargeThan8/${blocksWithHeight.length}".padTo(10, ' ')
-        val gaps =
-          heightGaps.view.toSeq
-            .sortBy(_._1)
-            .map(v => s"${v._1}:${v._2}".padTo(6, ' '))
-            .mkString(" ")
-        print(s"$chainIndex -> $ratio -> $gaps\n")
-      }
-    case Left(error) => throw error
+        print(s"$chainIndex, all blocks: $allBlocks, uncle blocks: $uncleBlocks\n")
+      case Left(error) =>
+        print(s"failed to get max height for $chainIndex, error: $error\n")
+    }
   }
+
+  print(
+    s"========== all blocks: $allBlocks, uncle blocks: $uncleBlocks, uncle rate: ${uncleBlocks.toDouble / allBlocks.toDouble}\n"
+  )
 
   storages.close() match {
     case Left(error) => throw error
