@@ -34,7 +34,8 @@ object HeightGapStatistic extends App {
       all += 1
       if (isUncleBlock) uncles += 1
     }
-    def uncleRate: Double = uncles.toDouble / all.toDouble
+    def uncleRate: Double                  = uncles.toDouble / all.toDouble
+    def blockRate(totalBlock: Int): Double = all.toDouble / totalBlock.toDouble
   }
 
   // private val rootPath       = Files.homeDir.resolve(".alephium-testnet")
@@ -87,7 +88,7 @@ object HeightGapStatistic extends App {
   miners.toSeq.sortBy(_._2.uncleRate).reverse.foreach { case (lockupScript, state) =>
     val address = Address.from(lockupScript)
     print(
-      s"${address.toBase58}, all blocks: ${state.all}, uncle blocks: ${state.uncles}, uncle rate: ${state.uncleRate}\n"
+      s"${address.toBase58}, uncle rate: ${state.uncleRate}, block rate: ${state.blockRate(allBlocks)}\n"
     )
   }
 
