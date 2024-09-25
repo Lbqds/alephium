@@ -76,7 +76,13 @@ object HeightGapStatistic extends App {
           allBlocks += hashes.length
           uncleBlocks += hashes.length - 1
           hashes.foreachWithIndex { case (blockHash, index) =>
-            val isUncleBlock = index != 0
+            val isMainChainBlock = index == 0
+            val isUncleBlock = !isMainChainBlock && {
+              blockFlow.getMainChainBlockByGhostUncle(ChainIndex.from(blockHash), blockHash) match {
+                case Right(v) => v.isDefined
+                case Left(error) => throw error
+              }
+            }
             val block        = chain.getBlockUnsafe(blockHash)
             miners.get(block.minerLockupScript) match {
               case Some(state) => state.increase(isUncleBlock)
