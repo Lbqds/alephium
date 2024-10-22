@@ -312,8 +312,8 @@ object AlephiumConfig {
       txsBroadcastDelay: Duration,
       upnp: UpnpSettings,
       bindAddress: InetSocketAddress,
-      internalAddress: InetSocketAddress,
-      coordinatorAddress: InetSocketAddress,
+      internalAddress: Option[InetSocketAddress],
+      coordinatorAddress: Option[InetSocketAddress],
       externalAddress: Option[InetSocketAddress],
       restPort: Int,
       wsPort: Int,
@@ -321,6 +321,7 @@ object AlephiumConfig {
   ) {
     def toNetworkSetting(connectionBuild: ActorRef => ActorRefT[Tcp.Command]): NetworkSetting = {
       val proofInOne = Hash.doubleHash(ByteString.fromString(noPreMineProof.mkString(""))).bytes
+      val defaultInternalAddress = new InetSocketAddress("127.0.0.1", 9973)
       NetworkSetting(
         networkId,
         lemanHardForkTimestamp,
@@ -348,8 +349,8 @@ object AlephiumConfig {
         txsBroadcastDelay,
         upnp,
         bindAddress,
-        internalAddress,
-        coordinatorAddress,
+        internalAddress.getOrElse(defaultInternalAddress),
+        coordinatorAddress.getOrElse(defaultInternalAddress),
         externalAddress,
         restPort,
         wsPort,
