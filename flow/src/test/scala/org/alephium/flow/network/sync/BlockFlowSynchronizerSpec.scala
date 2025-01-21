@@ -902,6 +902,19 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     blockFlowSynchronizerActor.isSyncing is true
   }
 
+  it should "switch from v2 to v1 if the number of v2 nodes is less than the required" in new BlockFlowSynchronizerV2Fixture {
+    import BlockFlowSynchronizer.V2SwitchThreshold
+
+    blockFlowSynchronizerActor.currentVersion is ProtocolV1
+    val brokers = (0 until V2SwitchThreshold).map(_ => addBroker(ProtocolV2))
+    blockFlowSynchronizerActor.currentVersion is ProtocolV2
+    brokers.head._1.ref ! PoisonPill
+    eventually {
+      blockFlowSynchronizerActor.peerSizeUsingV2 is 2
+      blockFlowSynchronizerActor.currentVersion is ProtocolV1
+    }
+  }
+
   it should "resync if an invalid block is received" in new BlockFlowSynchronizerV2Fixture {
     val chainIndex                            = ChainIndex.unsafe(0, 0)
     val selfChainTips                         = genChainTips
