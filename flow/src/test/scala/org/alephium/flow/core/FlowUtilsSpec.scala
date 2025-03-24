@@ -749,6 +749,7 @@ class FlowUtilsSpec extends AlephiumSpec {
   }
 
   it should "select duplicate ghost uncles before danube" in new GhostUncleFixture with Generators {
+    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
     setHardFork(HardFork.Rhone)
     val chainIndex = chainIndexGenForBroker(brokerConfig).sample.value
     mineBlocks(blockFlow, chainIndex, ALPH.MaxGhostUncleAge)
@@ -771,6 +772,7 @@ class FlowUtilsSpec extends AlephiumSpec {
 
   it should "not select duplicate ghost uncles since danube" in new GhostUncleFixture
     with Generators {
+    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
     setHardForkSince(HardFork.Danube)
     val chainIndex = chainIndexGenForBroker(brokerConfig).sample.value
     mineBlocks(blockFlow, chainIndex, ALPH.MaxGhostUncleAge)
@@ -810,6 +812,7 @@ class FlowUtilsSpec extends AlephiumSpec {
 
   it should "not select the ghost uncle if it is a duplicates of used uncles" in new GhostUncleFixture
     with Generators {
+    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
     setHardForkSince(HardFork.Danube)
     val chainIndex = chainIndexGenForBroker(brokerConfig).sample.value
     mineBlocks(blockFlow, chainIndex, ALPH.MaxGhostUncleAge)

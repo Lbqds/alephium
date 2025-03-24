@@ -1097,6 +1097,7 @@ class BlockValidationSpec extends AlephiumSpec {
   }
 
   it should "allow duplicate ghost uncles before danube" in new Fixture with GhostUncleFixture {
+    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
     setHardFork(HardFork.Rhone)
     mineBlocks(blockFlow, chainIndex, ALPH.MaxGhostUncleAge)
 
@@ -1121,6 +1122,7 @@ class BlockValidationSpec extends AlephiumSpec {
 
   it should "invalidate block if there are duplicate ghost uncles since danube" in new Fixture
     with GhostUncleFixture {
+    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
     setHardForkSince(HardFork.Danube)
     mineBlocks(blockFlow, chainIndex, ALPH.MaxGhostUncleAge)
 
@@ -1163,6 +1165,7 @@ class BlockValidationSpec extends AlephiumSpec {
 
   it should "invalidate block if a ghost uncle is a duplicate of used uncles" in new Fixture
     with GhostUncleFixture {
+    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
     setHardForkSince(HardFork.Danube)
     mineBlocks(blockFlow, chainIndex, ALPH.MaxGhostUncleAge)
 
