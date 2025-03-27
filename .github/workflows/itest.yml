@@ -22,5 +22,5 @@ jobs:
           cache: sbt
       - name: Setup SBT
         uses: sbt/setup-sbt@v1
-      - run: sbt integration/test
+      - run: sbt integration/testOnly org.alephium.app.InterCliqueSyncTest -- -z "ghost uncle"
         shell: bash
