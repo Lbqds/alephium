@@ -28,7 +28,7 @@ object BuiltInFunctions extends App {
 
   import java.io.PrintWriter
   new PrintWriter("../protocol/src/main/resources/ralph-built-in-functions.json") {
-    write(json)
+    write(json.replace("\r\n", "\n"))
     close()
   }
 
