@@ -24,6 +24,7 @@ import akka.io.Tcp
 import akka.util.ByteString
 
 import org.alephium.api.model._
+import org.alephium.flow.mining.Miner
 import org.alephium.flow.network.broker.MisbehaviorManager
 import org.alephium.protocol.WireVersion
 import org.alephium.protocol.config.{GroupConfig, NetworkConfig}
@@ -483,9 +484,11 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
     bootstrapClique.startMining()
     cliques0.foreach(_.startMining())
     Thread.sleep(30 * 1000)
-    cliques0.foreach(_.stopMining())
+    cliques0.foreach { clique =>
+      clique.servers.head.miner ! Miner.Stop
+    }
     Thread.sleep(30 * 1000)
-    bootstrapClique.stopMining()
+    bootstrapClique.servers.head.miner ! Miner.Stop
 
     val toTs = TimeStamp.now()
 
@@ -501,6 +504,7 @@ class InterCliqueSyncTest extends AlephiumActorSpec {
         peer.restPort
       ).blocks.flatMap(identity)
     }
+    print(s"size: ${blocks.filter(_.ghostUncles.nonEmpty).length}\n")
     blocks.filter(_.ghostUncles.nonEmpty).nonEmpty is true
 
     val allCliques = cliques0 :+ clique1
