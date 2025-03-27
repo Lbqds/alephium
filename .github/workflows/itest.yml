@@ -22,5 +22,18 @@ jobs:
           cache: sbt
       - name: Setup SBT
         uses: sbt/setup-sbt@v1
-      - run: sbt integration/test
+      - run: |
+          sbt "integration/testOnly org.alephium.app.BlocksExportImportTest" &&
+          sbt "integration/testOnly org.alephium.app.BroadcastTxTest" &&
+          sbt "integration/testOnly org.alephium.app.ConfigTest" &&
+          sbt "integration/testOnly org.alephium.app.DanubeUpgradeTest" &&
+          sbt "integration/testOnly org.alephium.app.InterCliqueSyncTest" &&
+          sbt "integration/testOnly org.alephium.app.IntraCliqueSyncTest" &&
+          sbt "integration/testOnly org.alephium.app.MiningTest" &&
+          sbt "integration/testOnly org.alephium.app.MultipleInputsTxTest" &&
+          sbt "integration/testOnly org.alephium.app.MultisigTest" &&
+          sbt "integration/testOnly org.alephium.app.ShutdownTest" &&
+          sbt "integration/testOnly org.alephium.app.SweepMiner" &&
+          sbt "integration/testOnly org.alephium.app.SweepNoneMiner" &&
+          sbt "integration/testOnly org.alephium.app.VotingTest"
         shell: bash

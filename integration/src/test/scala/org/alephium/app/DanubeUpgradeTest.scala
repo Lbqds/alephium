@@ -31,6 +31,7 @@ class DanubeUpgradeTest extends AlephiumActorSpec {
     clique.start()
     clique.startMining()
     Thread.sleep(40000)
+    print(s"=========== stop mining now\n")
     clique.stopMining()
 
     val blocks = clique.selfClique().nodes.flatMap { peer =>
