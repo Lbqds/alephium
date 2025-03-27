@@ -193,11 +193,15 @@ class CliqueFixture(implicit spec: AlephiumActorSpec)
 
   def confirmTx(tx: SubmitTxResult, restPort: Int): Assertion = eventually {
     val txStatus = request[TxStatus](getTransactionStatus(tx), restPort)
+    print(tx.txId.toHexString)
+    print("\n")
     checkConfirmations(txStatus)
   }
 
   def confirmTx(tx: TransferResult, restPort: Int): Assertion = eventually {
     val txStatus = request[TxStatus](getTransactionStatus(tx), restPort)
+    print(tx.txId.toHexString)
+    print("\n")
     checkConfirmations(txStatus)
   }
 

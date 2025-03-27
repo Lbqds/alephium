@@ -64,6 +64,7 @@ final class AccountViewHandler(val blockFlow: BlockFlow)(implicit
 
   def handleFlowData: Receive = {
     case ChainHandler.FlowDataAdded(block: Block, _, _) =>
+      log.info(s"======== account view: ${block.hash.toHexString}, $isNodeSynced")
       if (isNodeSynced && block.chainIndex.relateTo(brokerConfig)) {
         log.info(s"============ account view: block ${block.hash.toHexString}")
         tryUpdateAccountView(block)

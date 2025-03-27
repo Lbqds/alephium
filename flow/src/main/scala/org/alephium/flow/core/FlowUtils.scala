@@ -128,7 +128,7 @@ trait FlowUtils
           sum + getMemPool(mainGroup).removeUsedTxs(txs.map(_.toTemplate))
         }
         if (removed > 0) {
-          logger.debug(s"Normal update for #$mainGroup mempool: #$removed removed")
+          logger.info(s"Normal update for #$mainGroup mempool: #$removed removed")
         }
       case Reorg(toRemove, toAdd) =>
         val (removed, added) = getMemPool(mainGroup).reorg(toRemove, toAdd)
