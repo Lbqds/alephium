@@ -33,7 +33,7 @@ class BuiltInFunctionsSpec extends AnyFlatSpecLike with Matchers {
       write(BuiltInFunctions.buildAllFunctions(), indent = 2)
 
     assert(
-      expectedBuiltinFunctionsDoc.replace("\r\n", "\n") == builtinFunctionsDoc,
+      expectedBuiltinFunctionsDoc.replace("\\r\\n", "\\n") == builtinFunctionsDoc,
       "The built-in functions documentation is not up to date. Please run `sbt tools/runMain org.alephium.tools.BuiltInFunctions` to update it."
     )
   }
