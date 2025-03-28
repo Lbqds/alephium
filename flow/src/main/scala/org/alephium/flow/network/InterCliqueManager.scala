@@ -132,6 +132,7 @@ object InterCliqueManager {
     private var nodeSynced: Boolean      = false
     private var firstTimeSynced: Boolean = true
     subscribeEvent(self, classOf[InterCliqueManager.SyncedResult])
+    println(s"======= subscribe sync status: ${self.path}")
 
     protected def onFirstTimeSynced(): Unit = {}
 
