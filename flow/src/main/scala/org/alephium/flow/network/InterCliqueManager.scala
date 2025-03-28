@@ -128,10 +128,9 @@ object InterCliqueManager {
     .build("alephium_peers_total", "Number of connected peers")
     .register()
 
-  trait NodeSyncStatus extends BaseActor with EventStream.Subscriber {
+  trait NodeSyncStatus extends BaseActor {
     private var nodeSynced: Boolean      = false
     private var firstTimeSynced: Boolean = true
-    subscribeEvent(self, classOf[InterCliqueManager.SyncedResult])
 
     protected def onFirstTimeSynced(): Unit = {}
 
