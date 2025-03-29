@@ -16,6 +16,8 @@
 
 package org.alephium.flow.network.interclique
 
+import java.net.InetSocketAddress
+
 import scala.collection.mutable
 
 import org.alephium.flow.Utils
@@ -79,6 +81,7 @@ trait BrokerHandler extends BaseBrokerHandler with SyncV2Handler {
   private def tryUpdateSyncStatus(locators: AVector[AVector[BlockHash]]): Unit = {
     // When our node is V2 but the peer is V1, since it is impossible to receive the
     // chain state from V1, we need to update the sync state by checking the locators
+    log.info(s"Try update sync status, self $selfAddress is V2, remote $remoteAddress is V1")
     if (!selfSynced && selfP2PVersion == P2PV2 && remoteP2PVersion == P2PV1) {
       val result = locators.forallE { locatorsPerChain =>
         if (locatorsPerChain.isEmpty) {
@@ -93,14 +96,18 @@ trait BrokerHandler extends BaseBrokerHandler with SyncV2Handler {
     }
   }
 
+  def selfAddress: InetSocketAddress = networkSetting.bindAddress
+
   def syncingV1: Receive = {
     case BaseBrokerHandler.SyncLocators(locators) =>
       val showLocators = Utils.showFlow(locators)
-      log.debug(s"Send sync locators to $remoteAddress: $showLocators")
+      log.info(s"Send sync locators from $selfAddress to $remoteAddress: $showLocators")
       send(InvRequest(locators))
     case BaseBrokerHandler.Received(InvRequest(requestId, locators)) =>
       if (validate(locators)) {
-        log.debug(s"Received sync request from $remoteAddress: ${Utils.showFlow(locators)}")
+        log.info(
+          s"Received sync request from $remoteAddress: ${Utils.showFlow(locators)}, self $selfAddress"
+        )
         allHandlers.flowHandler ! FlowHandler.GetSyncInventories(
           requestId,
           locators,
@@ -270,14 +277,14 @@ trait BrokerHandler extends BaseBrokerHandler with SyncV2Handler {
   var remoteSynced: Boolean = false
   def setSelfSynced(): Unit = {
     if (!selfSynced) {
-      log.info(s"Self synced with $remoteAddress")
+      log.info(s"Self $selfAddress synced with $remoteAddress")
       selfSynced = true
       cliqueManager ! CliqueManager.Synced(remoteBrokerInfo)
     }
   }
   def setRemoteSynced(): Unit = {
     if (!remoteSynced) {
-      log.info(s"Remote $remoteAddress synced with our node")
+      log.info(s"Remote $remoteAddress synced with our node $selfAddress")
       remoteSynced = true
     }
   }
@@ -306,6 +313,9 @@ trait BrokerHandler extends BaseBrokerHandler with SyncV2Handler {
   }
 
   private def handleInv(hashes: AVector[AVector[BlockHash]]): Unit = {
+    log.info(
+      s"Try update sync status, self $selfAddress is V1, remote $remoteAddress is $remoteP2PVersion"
+    )
     if (hashes.forall(_.isEmpty)) {
       setSelfSynced()
     } else {
@@ -358,15 +368,17 @@ trait SyncV2Handler { _: BrokerHandler =>
 
     val receive: Receive = {
       case BaseBrokerHandler.SendChainState(tips) =>
-        log.debug(s"Send chain state to $remoteAddress: ${BrokerHandler.showChainState(tips)}")
+        log.info(
+          s"Send chain state from $selfAddress to $remoteAddress: ${BrokerHandler.showChainState(tips)}"
+        )
         send(ChainState(tips))
         tips.foreach(tip => selfChainTips(tip.chainIndex) = tip)
         checkSyncedByChainState()
 
       case BaseBrokerHandler.Received(ChainState(tips)) =>
         if (checkChainState(tips)) {
-          log.debug(
-            s"Received chain state from $remoteAddress: ${BrokerHandler.showChainState(tips)}"
+          log.info(
+            s"Received chain state from $remoteAddress: ${BrokerHandler.showChainState(tips)}, self: $selfAddress"
           )
           blockFlowSynchronizer ! BlockFlowSynchronizer.UpdateChainState(tips)
           tips.foreach(tip => remoteChainTips(tip.chainIndex) = tip)
@@ -432,6 +444,7 @@ trait SyncV2Handler { _: BrokerHandler =>
   // scalastyle:on method.length
 
   private def checkSyncedByChainState(): Unit = {
+    log.info(s"Try update sync status, both self $selfAddress and remote $remoteAddress are V2")
     if (!selfSynced && selfChainTips.nonEmpty) {
       val synced = selfChainTips.forall { selfTip =>
         val remoteTip = remoteChainTips(selfTip.chainIndex)
