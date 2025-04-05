@@ -678,7 +678,7 @@ class VMSpec extends AlephiumSpec with Generators {
     val bar =
       s"""
          |Contract Bar(foo: Foo) {
-         |  @using(routePattern = true)
+         |  @using(preserveCaller = true)
          |  pub fn bax(caller: Address) -> () {
          |    foo.foo(caller)
          |  }
@@ -691,7 +691,7 @@ class VMSpec extends AlephiumSpec with Generators {
          |    bax(caller)
          |  }
          |
-         |  @using(routePattern = true)
+         |  @using(preserveCaller = true)
          |  pub fn bar(caller: Address) -> () {
          |    bax(caller)
          |  }
