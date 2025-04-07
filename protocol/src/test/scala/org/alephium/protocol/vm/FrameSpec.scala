@@ -106,21 +106,21 @@ class FrameSpec extends AlephiumSpec with FrameFixture {
     }
 
     val contract0 =
-      StatefulContract(0, AVector(Method(true, true, true, false, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, true, true, false, false, 0, 0, 0, AVector.empty)))
     val contract1 =
-      StatefulContract(0, AVector(Method(true, false, false, false, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, false, false, false, false, 0, 0, 0, AVector.empty)))
     val contract2 =
-      StatefulContract(0, AVector(Method(true, true, false, false, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, true, false, false, false, 0, 0, 0, AVector.empty)))
     val contract3 =
-      StatefulContract(0, AVector(Method(true, false, true, false, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, false, true, false, false, 0, 0, 0, AVector.empty)))
     val contract4 =
-      StatefulContract(0, AVector(Method(true, true, true, true, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, true, true, true, false, 0, 0, 0, AVector.empty)))
     val contract5 =
-      StatefulContract(0, AVector(Method(true, false, false, true, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, false, false, true, false, 0, 0, 0, AVector.empty)))
     val contract6 =
-      StatefulContract(0, AVector(Method(true, true, false, true, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, true, false, true, false, 0, 0, 0, AVector.empty)))
     val contract7 =
-      StatefulContract(0, AVector(Method(true, false, true, true, 0, 0, 0, AVector.empty)))
+      StatefulContract(0, AVector(Method(true, false, true, true, false, 0, 0, 0, AVector.empty)))
 
     def test(_frame: => StatefulFrame, contract: StatefulContract, emptyOutput: Boolean) = {
       val frame      = _frame
@@ -366,6 +366,7 @@ class FrameSpec extends AlephiumSpec with FrameFixture {
           false,
           useContractAssets = true,
           usePayToContractOnly = false,
+          useRoutePattern = false,
           0,
           0,
           0,
@@ -376,6 +377,7 @@ class FrameSpec extends AlephiumSpec with FrameFixture {
           false,
           useContractAssets = false,
           usePayToContractOnly = true,
+          useRoutePattern = false,
           0,
           0,
           0,
@@ -409,7 +411,7 @@ class FrameSpec extends AlephiumSpec with FrameFixture {
   }
 
   it should "charge gas for method selector" in {
-    val method    = Method[StatefulContext](true, false, false, false, 0, 0, 0, AVector.empty)
+    val method    = Method.testDefault[StatefulContext](true, 0, 0, 0, AVector.empty)
     val selector0 = Method.Selector(0)
     val selector1 = Method.Selector(1)
     val methods = AVector(
@@ -445,6 +447,212 @@ class FrameSpec extends AlephiumSpec with FrameFixture {
     frame.callExternalBySelector(selector0).isRight is true
     gasRemaining.subUnsafe(context.gasRemaining) is GasSchedule.callGas
   }
+
+  it should "correctly handle useRoutePattern in getCallAddress method" in new FrameFixture {
+    // Create a method with useRoutePattern = true
+    val methodWithRoutePattern = Method[StatefulContext](
+      isPublic = true,
+      usePreapprovedAssets = false,
+      useContractAssets = false,
+      usePayToContractOnly = false,
+      useRoutePattern = true,
+      argsLength = 1,
+      localsLength = 2,
+      returnLength = 0,
+      instrs = AVector.empty
+    )
+
+    // Create a method with useRoutePattern = false
+    val methodWithoutRoutePattern = Method[StatefulContext](
+      isPublic = true,
+      usePreapprovedAssets = false,
+      useContractAssets = false,
+      usePayToContractOnly = false,
+      useRoutePattern = false,
+      argsLength = 1,
+      localsLength = 2,
+      returnLength = 0,
+      instrs = AVector.empty
+    )
+
+    // Create contract
+    val contractId = ContractId.random
+    val contract   = StatefulContract(0, AVector(methodWithRoutePattern, methodWithoutRoutePattern))
+    val (contractObj, context) = prepareContract(
+      contract,
+      AVector.empty,
+      AVector.empty,
+      contractIdOpt = Some(contractId)
+    )(NetworkConfigFixture.Rhone)
+
+    // Create caller contract
+    val callerContractId = ContractId.random
+    val (callerContractObj, _) = prepareContract(
+      contract,
+      AVector.empty,
+      AVector.empty,
+      contractIdOpt = Some(callerContractId)
+    )(NetworkConfigFixture.Rhone)
+
+    val callerFrame = StatefulFrame(
+      0,
+      callerContractObj,
+      Stack.ofCapacity(10),
+      methodWithoutRoutePattern,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      None,
+      None
+    )
+
+    // Create frame with route pattern enabled
+    val frameWithRoutePattern = StatefulFrame(
+      0,
+      contractObj,
+      Stack.ofCapacity(10),
+      methodWithRoutePattern,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      Some(callerFrame),
+      None
+    )
+
+    // Create frame without route pattern
+    val frameWithoutRoutePattern = StatefulFrame(
+      0,
+      contractObj,
+      Stack.ofCapacity(10),
+      methodWithoutRoutePattern,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      Some(callerFrame),
+      None
+    )
+
+    // With useRoutePattern = false, it should return its own contract address
+    frameWithoutRoutePattern.getCallAddress() isE Val.Address(LockupScript.p2c(contractId))
+
+    // With useRoutePattern = true, it should go through callerFrame.getCallerAddress()
+    frameWithRoutePattern.getCallAddress() isE Val.Address(LockupScript.p2c(callerContractId))
+  }
+
+  it should "correctly handle getExternalCallerAddress and getExternalCallerFrame logic" in new FrameFixture {
+    val contractId       = ContractId.random
+    val externalCallerId = ContractId.random
+
+    // Create a basic method
+    val method = Method[StatefulContext](
+      isPublic = true,
+      usePreapprovedAssets = false,
+      useContractAssets = false,
+      usePayToContractOnly = false,
+      useRoutePattern = false,
+      argsLength = 1,
+      localsLength = 2,
+      returnLength = 0,
+      instrs = AVector.empty
+    )
+
+    // Create contracts
+    val contract = StatefulContract(0, AVector(method))
+    val (contractObj, context) = prepareContract(
+      contract,
+      AVector.empty,
+      AVector.empty,
+      contractIdOpt = Some(contractId)
+    )(NetworkConfigFixture.Rhone)
+
+    val (externalCallerObj, _) = prepareContract(
+      contract,
+      AVector.empty,
+      AVector.empty,
+      contractIdOpt = Some(externalCallerId)
+    )(NetworkConfigFixture.Rhone)
+
+    // Create external caller frame
+    val externalCallerFrame = StatefulFrame(
+      0,
+      externalCallerObj,
+      Stack.ofCapacity(10),
+      method,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      None,
+      None
+    )
+
+    // Create a same contract caller frame (with same contract ID)
+    val (sameContractCallerObj, _) = prepareContract(
+      contract,
+      AVector.empty,
+      AVector.empty,
+      contractIdOpt = Some(contractId)
+    )(NetworkConfigFixture.Rhone)
+
+    val sameContractCallerFrame = StatefulFrame(
+      0,
+      sameContractCallerObj,
+      Stack.ofCapacity(10),
+      method,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      Some(externalCallerFrame),
+      None
+    )
+
+    // Create the frame to test
+    val frame = StatefulFrame(
+      0,
+      contractObj,
+      Stack.ofCapacity(10),
+      method,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      Some(sameContractCallerFrame),
+      None
+    )
+
+    // Test: getExternalCallerAddress should skip the same-contract frame and return the external caller
+    val expectedAddress = Val.Address(LockupScript.p2c(externalCallerId))
+    frame.getExternalCallerAddress() isE expectedAddress
+
+    // Test: with no caller frame, should fail with ExternalCallerNotAvailable
+    val frameWithoutCaller = StatefulFrame(
+      0,
+      contractObj,
+      Stack.ofCapacity(10),
+      method,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      None,
+      None
+    )
+
+    frameWithoutCaller.getExternalCallerAddress().leftValue isE ExternalCallerNotAvailable
+
+    // Test: with a script as current frame, should return tx input address
+    val scriptObj = StatefulScriptObject(StatefulScript.unsafe(AVector(method)))
+    val scriptFrame = StatefulFrame(
+      0,
+      scriptObj,
+      Stack.ofCapacity(10),
+      method,
+      VarVector.emptyVal,
+      _ => okay,
+      context,
+      None,
+      None
+    )
+
+    scriptFrame.getExternalCallerAddress() isE context.getUniqueTxInputAddress().rightValue
+  }
 }
 
 trait FrameFixture extends ContextGenerators {
@@ -458,6 +666,7 @@ trait FrameFixture extends ContextGenerators {
     usePreapprovedAssets = usePreapprovedAssets,
     useContractAssets = useAssetsInContract,
     usePayToContractOnly = usePayToContractOnly,
+    useRoutePattern = false,
     argsLength = localsLength - 1,
     localsLength,
     returnLength = 0,
