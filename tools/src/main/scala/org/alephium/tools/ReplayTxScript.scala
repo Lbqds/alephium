@@ -35,6 +35,8 @@ object ReplayTxScript extends App {
   implicit private val logConfig: LogConfig         = blockFlow.logConfig
   private val nonCoinbaseValidation: TxValidation   = TxValidation.build
 
+  private val txsCount = new AtomicInteger(0)
+
   Runtime.getRuntime.addShutdownHook(new Thread(() => storages.closeUnsafe()))
 
   IOUtils.tryExecute(replayUnsafe()) match {
@@ -58,12 +60,14 @@ object ReplayTxScript extends App {
       totalCount += maxHeight
 
       new Thread(() =>
-        (fromHeight to maxHeight).foreach { height =>
+        maxHeight.to(fromHeight, -1).foreach { height =>
           replayBlock(chainIndex, height)
           val count = executedCount.addAndGet(1)
           if (count % 10000 == 0) {
             val progress = (count.toDouble / totalCount.toDouble) * 100
-            print(s"Executed #$count blocks, progress: ${f"$progress%.0f%%"}\n")
+            print(
+              s"Executed #$count blocks, progress: ${f"$progress%.0f%%"}, txs count: ${txsCount.get()}\n"
+            )
           }
         }
       )
@@ -116,6 +120,7 @@ object ReplayTxScript extends App {
           val tx = block.transactions(index)
           val result = tx.unsigned.scriptOpt match {
             case Some(_) =>
+              val _ = txsCount.incrementAndGet()
               nonCoinbaseValidation.checkBlockTx(
                 block.chainIndex,
                 tx,
