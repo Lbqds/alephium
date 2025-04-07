@@ -41,10 +41,44 @@ object ReplayTxScript extends App {
     case Right(threads) =>
       threads.foreach(_.start())
       threads.foreach(_.join())
+      brokerConfig.cliqueGroups.foreach(persistStatistic)
       print(s"Replay completed\n")
     case Left(error) =>
       print(s"IO error occurred when replaying: $error\n")
       sys.exit(1)
+  }
+
+  private def tryPersistStatistic(groupIndex: GroupIndex): Unit = {
+    import org.alephium.protocol.vm.Statistic
+    val transferInfos = Statistic.transferInfos(groupIndex.value)
+    if (transferInfos.length >= 100) {
+      persistStatistic(groupIndex)
+    }
+  }
+
+  private def persistStatistic(groupIndex: GroupIndex): Unit = {
+    import java.nio.charset.StandardCharsets
+    import java.nio.file.{Files, Paths, StandardOpenOption}
+    import org.alephium.protocol.vm.Statistic
+    val transferInfos = Statistic.transferInfos(groupIndex.value)
+    val content0      = transferInfos.map(_.toString0).mkString("", "\n", "\n")
+    val path0         = Paths.get(s"/alephium-home/.alephium/statistic0-${groupIndex.value}")
+    Files.write(
+      path0,
+      content0.getBytes(StandardCharsets.UTF_8),
+      StandardOpenOption.APPEND,
+      StandardOpenOption.CREATE
+    )
+
+    val content1 = transferInfos.map(_.toString1).mkString("", "\n", "\n")
+    val path1    = Paths.get(s"/alephium-home/.alephium/statistic1-${groupIndex.value}")
+    Files.write(
+      path1,
+      content1.getBytes(StandardCharsets.UTF_8),
+      StandardOpenOption.APPEND,
+      StandardOpenOption.CREATE
+    )
+    transferInfos.clear()
   }
 
   private def replayUnsafe() = {
@@ -58,8 +92,9 @@ object ReplayTxScript extends App {
       totalCount += maxHeight
 
       new Thread(() =>
-        (fromHeight to maxHeight).foreach { height =>
+        (fromHeight to maxHeight).reverse.foreach { height =>
           replayBlock(chainIndex, height)
+          tryPersistStatistic(groupIndex)
           val count = executedCount.addAndGet(1)
           if (count % 10000 == 0) {
             val progress = (count.toDouble / totalCount.toDouble) * 100

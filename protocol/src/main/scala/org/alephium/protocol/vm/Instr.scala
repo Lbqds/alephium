@@ -2032,12 +2032,25 @@ sealed trait Transfer extends AssetInstr {
     }
   }
 
+  private def addTransferInfo[C <: StatefulContext](
+      frame: Frame[C],
+      lockupScript: LockupScript,
+      tokenId: TokenId,
+      amount: util.U256
+  ): Unit = {
+    val txId       = frame.ctx.txId
+    val timestamp  = frame.ctx.blockEnv.timeStamp
+    val groupIndex = frame.ctx.blockEnv.chainIndex.from
+    Statistic.addTransferInfo(groupIndex, txId, this, lockupScript, tokenId, amount, timestamp)
+  }
+
   @inline def transferAlph[C <: StatefulContext](
       frame: Frame[C],
       from: LockupScript,
       to: LockupScript,
       amount: Val.U256
   ): ExeResult[Unit] = {
+    if (from == to) addTransferInfo[C](frame, from, TokenId.alph, amount.v)
     if (amount.v.isZero && frame.ctx.getHardFork().isRhoneEnabled()) {
       okay
     } else {
@@ -2082,6 +2095,7 @@ sealed trait Transfer extends AssetInstr {
       to: LockupScript,
       amount: Val.U256
   ): ExeResult[Unit] = {
+    if (from == to) addTransferInfo[C](frame, from, tokenId, amount.v)
     if (amount.v.isZero && frame.ctx.getHardFork().isRhoneEnabled()) {
       okay
     } else {
@@ -3072,3 +3086,62 @@ final case class DEBUG(stringParts: AVector[Val.ByteVec])
   }
 }
 object DEBUG extends StatelessInstrCompanion1[AVector[Val.ByteVec]]
+
+object Statistic {
+  import java.time.{Instant, ZoneOffset}
+  import java.time.format.DateTimeFormatter
+  import scala.collection.mutable
+  import org.alephium.protocol.model._
+  private val formatter =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
+
+  final case class TransferInfo(
+      txId: TransactionId,
+      instr: Instr[StatefulContext],
+      lockupScript: LockupScript,
+      tokenId: TokenId,
+      amount: util.U256,
+      timestamp: TimeStamp
+  ) {
+    def toString0: String = {
+      val instrStr = instr match {
+        case TransferAlph | TransferToken                 => "transferToken"
+        case TransferAlphFromSelf | TransferTokenFromSelf => "transferTokenFromSelf"
+        case TransferAlphToSelf | TransferTokenToSelf     => "transferTokenToSelf"
+        case _                                            => ???
+      }
+      val address = Address.from(lockupScript).toBase58
+      val date    = formatter.format(Instant.ofEpochMilli(timestamp.millis))
+      s"$instrStr, $address, $date"
+    }
+    def toString1: String = {
+      s"$toString0, ${tokenId.toHexString}, $amount, ${txId.toHexString}"
+    }
+  }
+
+  val transferInfos: Array[mutable.ArrayBuffer[TransferInfo]] =
+    Array.fill(4)(mutable.ArrayBuffer.empty)
+
+  @SuppressWarnings(Array("org.wartremover.warts.AsInstanceOf"))
+  def addTransferInfo[Ctx <: StatefulContext](
+      groupIndex: GroupIndex,
+      txId: TransactionId,
+      instr: Instr[Ctx],
+      lockupScript: LockupScript,
+      tokenId: TokenId,
+      amount: util.U256,
+      timestamp: TimeStamp
+  ): Unit = {
+    transferInfos(groupIndex.value).addOne(
+      TransferInfo(
+        txId,
+        instr.asInstanceOf[Instr[StatefulContext]],
+        lockupScript,
+        tokenId,
+        amount,
+        timestamp
+      )
+    )
+    ()
+  }
+}
