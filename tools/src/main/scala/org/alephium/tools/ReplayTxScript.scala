@@ -42,9 +42,24 @@ object ReplayTxScript extends App {
       threads.foreach(_.start())
       threads.foreach(_.join())
       print(s"Replay completed\n")
+      persistStatistic()
     case Left(error) =>
       print(s"IO error occurred when replaying: $error\n")
       sys.exit(1)
+  }
+
+  private def persistStatistic(): Unit = {
+    import java.nio.charset.StandardCharsets
+    import java.nio.file.{Files, Paths}
+    import org.alephium.protocol.vm.Statistic
+    val content0 = Statistic.transferInfos.map(_.toString0).mkString("\n")
+    val path0    = Paths.get("statistic0")
+    Files.write(path0, content0.getBytes(StandardCharsets.UTF_8))
+
+    val content1 = Statistic.transferInfos.map(_.toString1).mkString("\n")
+    val path1    = Paths.get("statistic1")
+    Files.write(path1, content1.getBytes(StandardCharsets.UTF_8))
+    ()
   }
 
   private def replayUnsafe() = {
