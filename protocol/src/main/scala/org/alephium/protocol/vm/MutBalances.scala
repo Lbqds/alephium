@@ -106,6 +106,19 @@ final case class MutBalances(all: ArrayBuffer[(LockupScript, MutBalancesPerLocku
     }
   }
 
+  // Retrieves the balance for a specific lockup script but keeps the entry in the collection
+  // with an empty balance. This preserves the original position of the entry in the collection.
+  def useForChainedInput(lockupScript: LockupScript): Option[MutBalancesPerLockup] = {
+    val index = all.indexWhere { case (ls, _) => ls == lockupScript }
+    if (index == -1) {
+      None
+    } else {
+      val result = all(index)._2
+      all(index) = lockupScript -> MutBalancesPerLockup.empty
+      Some(result)
+    }
+  }
+
   def useForNewContract(): Option[MutBalancesPerLockup] = {
     Option.when(all.nonEmpty) {
       val accumulator = MutBalancesPerLockup.empty
@@ -119,6 +132,7 @@ final case class MutBalances(all: ArrayBuffer[(LockupScript, MutBalancesPerLocku
     @tailrec
     def iter(index: Int): Option[Unit] = {
       if (index >= balances.all.length) {
+        balances.all.clear()
         Some(())
       } else {
         val (lockupScript, balancesPerLockup) = balances.all(index)
