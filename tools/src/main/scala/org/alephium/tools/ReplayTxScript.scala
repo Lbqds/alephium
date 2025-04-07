@@ -38,9 +38,7 @@ object ReplayTxScript extends App {
   Runtime.getRuntime.addShutdownHook(new Thread(() => storages.closeUnsafe()))
 
   IOUtils.tryExecute(replayUnsafe()) match {
-    case Right(threads) =>
-      threads.foreach(_.start())
-      threads.foreach(_.join())
+    case Right(()) =>
       brokerConfig.cliqueGroups.foreach(persistStatistic)
       print(s"Replay completed\n")
     case Left(error) =>
@@ -83,26 +81,23 @@ object ReplayTxScript extends App {
 
   private def replayUnsafe() = {
     val fromHeight    = ALPH.GenesisHeight + 1
-    var totalCount    = 0
+    val maxHeight     = 2991252
+    val totalCount    = maxHeight
     val executedCount = new AtomicInteger(0)
-    (0 until brokerConfig.groups).map { index =>
-      val groupIndex = GroupIndex.unsafe(index)
-      val chainIndex = ChainIndex(groupIndex, groupIndex)
-      val maxHeight  = blockFlow.getBlockChain(chainIndex).maxHeightByWeightUnsafe
-      totalCount += maxHeight
-
-      new Thread(() =>
-        (fromHeight to maxHeight).reverse.foreach { height =>
-          replayBlock(chainIndex, height)
-          tryPersistStatistic(groupIndex)
-          val count = executedCount.addAndGet(1)
-          if (count % 10000 == 0) {
-            val progress = (count.toDouble / totalCount.toDouble) * 100
-            print(s"Executed #$count blocks, progress: ${f"$progress%.0f%%"}\n")
-          }
+    val chainIndex    = ChainIndex.unsafe(0, 0)
+    val thread = new Thread(() =>
+      (fromHeight to maxHeight).reverse.foreach { height =>
+        replayBlock(chainIndex, height)
+        tryPersistStatistic(chainIndex.from)
+        val count = executedCount.addAndGet(1)
+        if (count % 10000 == 0) {
+          val progress = (count.toDouble / totalCount.toDouble) * 100
+          print(s"Executed #$count blocks, progress: ${f"$progress%.0f%%"}\n")
         }
-      )
-    }
+      }
+    )
+    thread.start()
+    thread.join()
   }
 
   private def replayBlock(chainIndex: ChainIndex, height: Int): Unit = {
