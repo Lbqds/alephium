@@ -1079,8 +1079,12 @@ object TxValidation {
             ) match {
               case Right(TxScriptExecution(remaining, contractInputs, _, generatedOutputs)) =>
                 if (contractInputs != tx.contractInputs) {
+                  logger.info(s"invalid contract inputs: ${contractInputs}, ${tx.contractInputs}")
                   invalidTx(InvalidContractInputs)
                 } else if (generatedOutputs != tx.generatedOutputs) {
+                  logger.info(
+                    s"invalid generated outputs: ${generatedOutputs}, ${tx.generatedOutputs}"
+                  )
                   invalidTx(InvalidGeneratedOutputs)
                 } else {
                   stagingWorldState.commit()

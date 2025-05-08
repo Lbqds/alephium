@@ -147,8 +147,8 @@ object ReplayTxScript extends App {
       stateHash <- replayBlock(block)
     } yield {
       if (stateHash != expected) {
-        print(
-          s"State hash mismatch: expected ${expected.toHexString}, got ${stateHash.toHexString}, block hash: ${block.hash.toHexString}\n"
+        exitOnError(
+          s"State hash mismatch: expected ${expected.toHexString}, got ${stateHash.toHexString}, block hash: ${block.hash.toHexString}"
         )
       }
     }
@@ -174,7 +174,7 @@ object ReplayTxScript extends App {
             case Right(_)                                                       => ()
             case Left(Right(TxScriptExeFailed(_))) if tx.contractInputs.isEmpty => ()
             case Left(error) =>
-              print(s"Failed to validate tx ${tx.id.toHexString} due to $error\n")
+              exitOnError(s"Failed to validate tx ${tx.id.toHexString} due to $error")
           }
           if (sequentialTxSupported) blockEnv.addOutputRefFromTx(tx.unsigned)
         }
