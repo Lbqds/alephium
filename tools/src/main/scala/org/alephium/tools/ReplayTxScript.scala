@@ -16,26 +16,60 @@
 
 package org.alephium.tools
 
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.annotation.tailrec
 
 import org.alephium.flow.client.Node
-import org.alephium.flow.setting.Platform
+import org.alephium.flow.io.Storages
+import org.alephium.flow.setting.{AlephiumConfig, Configs, Platform}
 import org.alephium.flow.validation._
 import org.alephium.io.IOResult
+import org.alephium.io.RocksDBSource.ProdSettings
 import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.config.{BrokerConfig, NetworkConfig}
 import org.alephium.protocol.model._
 import org.alephium.protocol.vm.{BlockEnv, LogConfig}
+import org.alephium.util.Env
 
 object ReplayTxScript extends App {
-  private val rootPath                              = Platform.getRootPath()
-  private val (blockFlow, storages)                 = Node.buildBlockFlowUnsafe(rootPath)
+  private val enableDanubeWithRhone = if (args.length == 0) {
+    false
+  } else if (args.length == 1 && args(0) == "enableDanubeWithRhone") {
+    true
+  } else {
+    exitOnError(s"Invalid args $args")
+  }
+
+  private def buildBlockFlowUnsafe(rootPath: Path) = {
+    val typesafeConfig =
+      Configs.parseConfigAndValidate(Env.Prod, rootPath, overwrite = true)
+    val originConfig = AlephiumConfig.load(typesafeConfig, "alephium")
+    val config = if (enableDanubeWithRhone) {
+      val newNetworkSetting =
+        originConfig.network.copy(danubeHardForkTimestamp =
+          originConfig.network.rhoneHardForkTimestamp
+        )
+      originConfig.copy(network = newNetworkSetting)
+    } else {
+      originConfig
+    }
+    val dbPath = rootPath.resolve(config.network.networkId.nodeFolder)
+    val storages =
+      Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
+    (Node.buildBlockFlowUnsafe(storages)(config), storages)
+  }
+
+  private val (blockFlow, storages)                 = buildBlockFlowUnsafe(Platform.getRootPath())
   implicit private val brokerConfig: BrokerConfig   = blockFlow.brokerConfig
   implicit private val networkConfig: NetworkConfig = blockFlow.networkConfig
   implicit private val logConfig: LogConfig         = blockFlow.logConfig
   private val txValidation: TxValidation            = TxValidation.build
+
+  if (enableDanubeWithRhone) {
+    assume(networkConfig.danubeHardForkTimestamp == networkConfig.rhoneHardForkTimestamp)
+  }
 
   Runtime.getRuntime.addShutdownHook(new Thread(() => storages.closeUnsafe()))
 
