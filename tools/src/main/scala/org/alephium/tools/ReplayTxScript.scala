@@ -34,21 +34,27 @@ import org.alephium.protocol.vm.{BlockEnv, LogConfig}
 import org.alephium.util.Env
 
 object ReplayTxScript extends App {
-  private val initHeight = if (args.length == 1) {
+  private val initHeight = if (args.length >= 1) {
     args(0).toInt
   } else {
     ALPH.GenesisHeight + 1
   }
 
+  private val enableDanubeUpgrade = args.length == 2
+
   private def buildBlockFlowUnsafe(rootPath: Path) = {
     val typesafeConfig =
       Configs.parseConfigAndValidate(Env.Prod, rootPath, overwrite = true)
     val originConfig = AlephiumConfig.load(typesafeConfig, "alephium")
-    val newNetworkSetting =
-      originConfig.network.copy(danubeHardForkTimestamp =
-        originConfig.network.rhoneHardForkTimestamp
-      )
-    val config = originConfig.copy(network = newNetworkSetting)
+    val config = if (enableDanubeUpgrade) {
+      val newNetworkSetting =
+        originConfig.network.copy(
+          danubeHardForkTimestamp = originConfig.network.rhoneHardForkTimestamp
+        )
+      originConfig.copy(network = newNetworkSetting)
+    } else {
+      originConfig
+    }
     val dbPath = rootPath.resolve(config.network.networkId.nodeFolder)
     val storages =
       Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
@@ -61,7 +67,9 @@ object ReplayTxScript extends App {
   implicit private val logConfig: LogConfig         = blockFlow.logConfig
   private val txValidation: TxValidation            = TxValidation.build
 
-  assume(networkConfig.danubeHardForkTimestamp == networkConfig.rhoneHardForkTimestamp)
+  if (enableDanubeUpgrade) {
+    assume(networkConfig.danubeHardForkTimestamp == networkConfig.rhoneHardForkTimestamp)
+  }
 
   Runtime.getRuntime.addShutdownHook(new Thread(() => storages.closeUnsafe()))
 
@@ -139,8 +147,8 @@ object ReplayTxScript extends App {
       stateHash <- replayBlock(block)
     } yield {
       if (stateHash != expected) {
-        exitOnError(
-          s"State hash mismatch: expected ${expected.toHexString}, got ${stateHash.toHexString}, block hash: ${block.hash.toHexString}"
+        print(
+          s"State hash mismatch: expected ${expected.toHexString}, got ${stateHash.toHexString}, block hash: ${block.hash.toHexString}\n"
         )
       }
     }
@@ -166,7 +174,7 @@ object ReplayTxScript extends App {
             case Right(_)                                                       => ()
             case Left(Right(TxScriptExeFailed(_))) if tx.contractInputs.isEmpty => ()
             case Left(error) =>
-              exitOnError(s"Failed to validate tx ${tx.id.toHexString} due to $error")
+              print(s"Failed to validate tx ${tx.id.toHexString} due to $error\n")
           }
           if (sequentialTxSupported) blockEnv.addOutputRefFromTx(tx.unsigned)
         }
