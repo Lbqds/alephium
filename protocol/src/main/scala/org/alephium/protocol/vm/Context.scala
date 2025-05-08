@@ -18,6 +18,8 @@ package org.alephium.protocol.vm
 
 import scala.collection.mutable.ArrayBuffer
 
+import com.typesafe.scalalogging.LazyLogging
+
 import org.alephium.crypto.Byte64
 import org.alephium.io.IOError
 import org.alephium.protocol.config.{GroupConfig, NetworkConfig}
@@ -320,7 +322,7 @@ object StatelessContext {
 }
 
 // scalastyle:off number.of.methods
-trait StatefulContext extends StatelessContext with ContractPool {
+trait StatefulContext extends StatelessContext with ContractPool with LazyLogging {
   def worldState: WorldState.Staging
 
   def logConfig: LogConfig
@@ -369,6 +371,16 @@ trait StatefulContext extends StatelessContext with ContractPool {
     }
   }
 
+  private def log(msg: String): Unit = {
+    import org.alephium.protocol.Hash
+    import org.alephium.util.Hex
+    val expectedTxId =
+      TransactionId.unsafe(
+        Hash.unsafe(Hex.unsafe("d1e5cedab59f7fcab95a7be90615bba9819da2450fc2a11c17d12b71eb16c85d"))
+      )
+    if (txId == expectedTxId) logger.info(msg)
+  }
+
   def generateContractOutputLeman(
       contractId: ContractId,
       contractOutput: ContractOutput
@@ -377,11 +389,14 @@ trait StatefulContext extends StatelessContext with ContractPool {
     if (inputIndex == -1) {
       failed(ContractAssetUnloaded(Address.contract(contractId)))
     } else {
-      if (getHardFork().isDanubeEnabled()) {
+      log(s"before generate outputs: ${contractInputs}")
+      val result = if (getHardFork().isDanubeEnabled()) {
         generateContractOutputDanube(contractId, contractOutput, inputIndex)
       } else {
         generateContractOutputLeman(contractId, contractOutput, inputIndex)
       }
+      log(s"after generate outputs: ${contractInputs}")
+      result
     }
   }
 
