@@ -19,6 +19,7 @@ package org.alephium.flow.validation
 import scala.collection.mutable
 
 import akka.util.ByteString
+import com.typesafe.scalalogging.LazyLogging
 
 import org.alephium.crypto.{ED25519, ED25519PublicKey, SecP256R1, SecP256R1PublicKey}
 import org.alephium.flow.core.{BlockFlow, BlockFlowGroupView, FlowUtils}
@@ -31,7 +32,7 @@ import org.alephium.protocol.vm.StatefulVM.TxScriptExecution
 import org.alephium.util.{AVector, EitherF, TimeStamp, U256}
 
 // scalastyle:off number.of.methods file.size.limit
-trait TxValidation {
+trait TxValidation extends LazyLogging {
   import ValidationStatus._
 
   implicit def groupConfig: GroupConfig
@@ -1088,7 +1089,8 @@ object TxValidation {
               case Left(Right(_: BreakingInstr)) =>
                 // This case should already be filtered by mempool and block assembly, double check here
                 invalidTx(UsingBreakingInstrs)
-              case Left(Right(_)) =>
+              case Left(Right(error)) =>
+                logger.info(s"========= ${tx.id.toHexString} ${tx.scriptExecutionOk}, $error")
                 checkScriptExeFlag(tx, false, GasBox.zero)
               case Left(Left(ioFalure)) => Left(Left(ioFalure.error))
             }
