@@ -34,27 +34,21 @@ import org.alephium.protocol.vm.{BlockEnv, LogConfig}
 import org.alephium.util.Env
 
 object ReplayTxScript extends App {
-  private val enableDanubeWithRhone = if (args.length == 0) {
-    false
-  } else if (args.length == 1 && args(0) == "enableDanubeWithRhone") {
-    true
+  private val initHeight = if (args.length == 1) {
+    args(0).toInt
   } else {
-    exitOnError(s"Invalid args $args")
+    ALPH.GenesisHeight + 1
   }
 
   private def buildBlockFlowUnsafe(rootPath: Path) = {
     val typesafeConfig =
       Configs.parseConfigAndValidate(Env.Prod, rootPath, overwrite = true)
     val originConfig = AlephiumConfig.load(typesafeConfig, "alephium")
-    val config = if (enableDanubeWithRhone) {
-      val newNetworkSetting =
-        originConfig.network.copy(danubeHardForkTimestamp =
-          originConfig.network.rhoneHardForkTimestamp
-        )
-      originConfig.copy(network = newNetworkSetting)
-    } else {
-      originConfig
-    }
+    val newNetworkSetting =
+      originConfig.network.copy(danubeHardForkTimestamp =
+        originConfig.network.rhoneHardForkTimestamp
+      )
+    val config = originConfig.copy(network = newNetworkSetting)
     val dbPath = rootPath.resolve(config.network.networkId.nodeFolder)
     val storages =
       Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
@@ -67,9 +61,7 @@ object ReplayTxScript extends App {
   implicit private val logConfig: LogConfig         = blockFlow.logConfig
   private val txValidation: TxValidation            = TxValidation.build
 
-  if (enableDanubeWithRhone) {
-    assume(networkConfig.danubeHardForkTimestamp == networkConfig.rhoneHardForkTimestamp)
-  }
+  assume(networkConfig.danubeHardForkTimestamp == networkConfig.rhoneHardForkTimestamp)
 
   Runtime.getRuntime.addShutdownHook(new Thread(() => storages.closeUnsafe()))
 
@@ -84,7 +76,6 @@ object ReplayTxScript extends App {
   private val executedCount = new AtomicInteger(0)
   private val totalCount    = maxHeightPerChain.sum
 
-  private val initHeight        = ALPH.GenesisHeight + 1
   private var currentGroupIndex = 0
   private var currentHeight     = initHeight
 

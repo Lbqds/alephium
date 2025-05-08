@@ -679,7 +679,7 @@ trait StatefulContext extends StatelessContext with ContractPool {
 
   def cleanBalances(): ExeResult[Unit] = {
     if (getHardFork().isDanubeEnabled()) {
-      cleanBalancesDanube()
+      cleanBalancesPreDanube()
     } else {
       cleanBalancesPreDanube()
     }
