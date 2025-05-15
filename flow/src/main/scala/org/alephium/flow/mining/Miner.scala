@@ -30,7 +30,7 @@ import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.{GroupConfig, NetworkConfig}
 import org.alephium.protocol.mining.PoW
 import org.alephium.protocol.model._
-import org.alephium.serde.deserialize
+import org.alephium.serde.{deserialize, serialize}
 import org.alephium.util._
 
 object Miner extends LazyLogging {
@@ -195,7 +195,14 @@ trait Miner extends Utils.BaseActorWithPoolExecutor with MinerState {
     val fromShift = brokerConfig.groupIndexOfBroker(chainIndex.from)
     val to        = chainIndex.to.value
     increaseCounts(fromShift, to, miningCount)
-    pendingTasks(fromShift)(to) = None
+    pendingTasks(fromShift)(to).foreach { job =>
+      if (job.headerBlob == serialize(block.header).drop(Nonce.byteLength)) {
+        log.info(s"================ equal remove")
+        pendingTasks(fromShift)(to) = None
+      } else {
+        log.info(s"=============== not equal")
+      }
+    }
 
     val totalCount = getMiningCount(fromShift, to)
     val txCount    = block.transactions.length
