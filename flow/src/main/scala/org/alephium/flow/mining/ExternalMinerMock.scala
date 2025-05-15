@@ -179,6 +179,7 @@ class ExternalMinerMock(nodes: AVector[InetSocketAddress])(implicit
 
   def handleServerMessage(message: ServerMessage): Unit = message.payload match {
     case Jobs(jobs) =>
+      log.info(s"============= received new jobs ${jobs.length}, ${brokerConfig.groups}")
       if (miningStarted) {
         updateAndStartTasks(jobs)
       }
