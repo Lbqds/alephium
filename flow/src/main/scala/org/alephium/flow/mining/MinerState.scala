@@ -57,6 +57,7 @@ trait MinerState {
     Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial")
   )
   protected def pickTasks(): IndexedSeq[(Int, Int, Job)] = {
+    println(s"========= mining counts: ${miningCounts}")
     val minCount   = miningCounts.map(_.min).min
     val countBound = minCount.addUnsafe(miningConfig.nonceStep)
     for {
