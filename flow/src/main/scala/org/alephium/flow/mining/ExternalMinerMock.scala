@@ -192,6 +192,7 @@ class ExternalMinerMock(nodes: AVector[InetSocketAddress])(implicit
               s"Mined an invalid block ${blockHash.toHexString} for chain ($fromGroup, $toGroup)"
             )
           }
+          if (miningStarted) startNewTasks()
         case None => log.error(s"Invalid group info in $m")
       }
   }
