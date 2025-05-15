@@ -75,9 +75,11 @@ trait MinerState {
     if (!tasksReady) {
       tasksReady = pendingTasks.forall(_.forall(_.nonEmpty))
     }
+    println(s"========== is tasks ready: ${tasksReady}")
     if (tasksReady) {
-      pickTasks().foreach { case (fromShift, to, job) =>
-        println(s"========== start task ${job.fromGroup} -> ${job.toGroup}")
+      val tasks = pickTasks()
+      println(s"========== picked tasks: ${tasks.map(v => (v._3.fromGroup, v._3.toGroup))}")
+      tasks.foreach { case (fromShift, to, job) =>
         startTask(fromShift, to, job)
         setRunning(fromShift, to)
       }
