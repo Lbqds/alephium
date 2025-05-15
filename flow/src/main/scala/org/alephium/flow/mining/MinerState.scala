@@ -77,6 +77,7 @@ trait MinerState {
     }
     if (tasksReady) {
       pickTasks().foreach { case (fromShift, to, job) =>
+        println(s"========== start task ${job.fromGroup} -> ${job.toGroup}")
         startTask(fromShift, to, job)
         setRunning(fromShift, to)
       }
