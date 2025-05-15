@@ -75,7 +75,6 @@ class MiningTest extends AlephiumActorSpec {
       s"127.0.0.1:${server0.config.network.minerApiPort},127.0.0.1:${server1.config.network.minerApiPort}"
     val soloMiner = new CpuSoloMiner(server0.config, server0.flowSystem, Some(apiAddresses))
 
-    println(s"============== tx chain index: ${tx.fromGroup} -> ${tx.toGroup}")
     confirmTx(tx, restPort)
     eventually {
       val txStatus = request[TxStatus](getTransactionStatus(tx), restPort)

@@ -211,7 +211,6 @@ trait Miner extends Utils.BaseActorWithPoolExecutor with MinerState {
     val to        = chainIndex.to.value
     increaseCounts(fromShift, to, miningCount)
     if (miningStarted) {
-      log.info(s"=========== no new block ${chainIndex}, start new tasks")
       setIdle(fromShift, to)
       startNewTasks()
     }
@@ -228,14 +227,12 @@ trait Miner extends Utils.BaseActorWithPoolExecutor with MinerState {
 
   def mine(index: ChainIndex, job: Job): Unit = {
     val task = poolAsync {
-      println(s"========= start mining task ${index}")
       Miner.mine(index, job) match {
         case Some((block, miningCount)) =>
           self ! Miner.NewBlockSolution(block, miningCount)
         case None =>
           self ! Miner.MiningNoBlock(index, miningConfig.nonceStep)
       }
-      println(s"========= mining task completed ${index}")
     }
     task.onComplete {
       case Success(_) => ()

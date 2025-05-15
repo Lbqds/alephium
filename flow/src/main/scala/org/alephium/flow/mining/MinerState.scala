@@ -57,8 +57,12 @@ trait MinerState {
     Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial")
   )
   protected def pickTasks(): IndexedSeq[(Int, Int, Job)] = {
-    println(s"========= mining counts: ${miningCounts.toSeq.flatten}")
-    val minCount   = miningCounts.map(_.min).min
+    val filteredCounts = for {
+      fromShift <- 0 until brokerConfig.groupNumPerBroker
+      to        <- 0 until brokerConfig.groups
+      if pendingTasks(fromShift)(to).nonEmpty
+    } yield miningCounts(fromShift)(to)
+    val minCount   = filteredCounts.minOption.getOrElse(miningCounts.map(_.min).min)
     val countBound = minCount.addUnsafe(miningConfig.nonceStep)
     for {
       fromShift <- 0 until brokerConfig.groupNumPerBroker
@@ -76,10 +80,8 @@ trait MinerState {
     if (!tasksReady) {
       tasksReady = pendingTasks.forall(_.forall(_.nonEmpty))
     }
-    println(s"========== is tasks ready: ${tasksReady}")
     if (tasksReady) {
       val tasks = pickTasks()
-      println(s"========== picked tasks: ${tasks.map(v => (v._3.fromGroup, v._3.toGroup))}")
       tasks.foreach { case (fromShift, to, job) =>
         startTask(fromShift, to, job)
         setRunning(fromShift, to)

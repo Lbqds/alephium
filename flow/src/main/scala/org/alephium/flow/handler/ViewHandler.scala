@@ -268,7 +268,6 @@ trait ViewHandlerState extends IOBaseActor {
     if (minerAddressesOpt.nonEmpty && subscribers.nonEmpty) {
       val minerAddress = minerAddressesOpt.get(chainIndex.to.value)
       poolAsync {
-        log.info(s"=========== send new template $chainIndex")
         escapeIOError(blockFlow.prepareBlockFlow(chainIndex, minerAddress)) { template =>
           subscribers.foreach(_ ! ViewHandler.NewTemplate(template, lazyBroadcast = true))
         }
