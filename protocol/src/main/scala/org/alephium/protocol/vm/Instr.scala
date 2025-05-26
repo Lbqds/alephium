@@ -815,6 +815,11 @@ object I256Mul extends BinaryArithmeticInstr[Val.I256] with I256StackOps with Ga
     BinaryArithmeticInstr.i256SafeOp(this, _.mul(_))(x, y)
 }
 object I256Div extends BinaryArithmeticInstr[Val.I256] with I256StackOps with GasLow {
+  override def _runWith[C <: StatelessContext](frame: Frame[C]): ExeResult[Unit] = {
+    Statistics.add(frame)
+    super._runWith(frame)
+  }
+
   protected def op(x: Val.I256, y: Val.I256): ExeResult[Val] =
     BinaryArithmeticInstr.i256SafeOp(this, _.div(_))(x, y)
 }
@@ -3299,3 +3304,19 @@ final case class DevInstr(instr: DevInstrBase)
   }
 }
 object DevInstr extends StatelessInstrCompanion1[DevInstrBase]
+
+object Statistics {
+  import scala.collection.mutable
+
+  val addresses: mutable.Set[Address] = mutable.Set.empty
+  var times: Int                      = 0
+
+  def add[Ctx <: StatelessContext](frame: Frame[Ctx]): Unit = {
+    frame.obj.getAddress().foreach { address =>
+      addresses.addOne(Address.from(address.lockupScript))
+      times += 1
+    }
+  }
+
+  def info: String = s"addresses: ${addresses.map(_.toBase58)}, times: $times"
+}

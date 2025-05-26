@@ -27,7 +27,7 @@ import org.alephium.io.IOResult
 import org.alephium.protocol.{ALPH, Hash}
 import org.alephium.protocol.config.{BrokerConfig, NetworkConfig}
 import org.alephium.protocol.model._
-import org.alephium.protocol.vm.{BlockEnv, LogConfig}
+import org.alephium.protocol.vm.{BlockEnv, LogConfig, Statistics}
 
 object ReplayTxScript extends App {
   private val rootPath                              = Platform.getRootPath()
@@ -66,7 +66,7 @@ object ReplayTxScript extends App {
         (from until to).foreach(replayBlock(chainIndex, _))
         val count    = executedCount.addAndGet(to - from)
         val progress = (count.toDouble / totalCount.toDouble) * 100
-        print(s"Executed #$count blocks, progress: ${f"$progress%.0f%%"}\n")
+        print(s"Executed #$count blocks, progress: ${f"$progress%.0f%%"}, ${Statistics.info}\n")
         replayBlocks()
       case None => ()
     }
