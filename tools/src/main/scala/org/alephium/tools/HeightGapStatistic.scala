@@ -16,6 +16,8 @@
 
 package org.alephium.tools
 
+import java.nio.file.Paths
+
 import scala.collection.mutable
 
 import org.alephium.flow.core.BlockFlow
@@ -24,7 +26,7 @@ import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
 import org.alephium.protocol.model.{Address, ChainIndex}
 import org.alephium.protocol.vm.LockupScript
-import org.alephium.util.{Duration, Env, Files, TimeStamp}
+import org.alephium.util.{Duration, Env, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
@@ -36,12 +38,13 @@ object HeightGapStatistic extends App {
       if (isUncle) uncles += 1
     }
     def uncleRate: Double                  = uncles.toDouble / all.toDouble
-    def orphanRate: Double                  = orphans.toDouble / all.toDouble
+    def orphanRate: Double                 = orphans.toDouble / all.toDouble
     def blockRate(totalBlock: Int): Double = all.toDouble / totalBlock.toDouble
   }
 
   // private val rootPath       = Files.homeDir.resolve(".alephium-testnet")
-  private val rootPath       = Files.homeDir.resolve(".alephium")
+  // private val _              = Files.homeDir.resolve(".alephium")
+  private val rootPath       = Paths.get("/mnt/shared-linux/.alephium")
   private val typesafeConfig = Configs.parseConfigAndValidate(Env.Prod, rootPath, overwrite = true)
   private val config         = AlephiumConfig.load(typesafeConfig, "alephium")
   private val dbPath         = rootPath.resolve(config.network.networkId.nodeFolder)
@@ -49,11 +52,11 @@ object HeightGapStatistic extends App {
     Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
-  private var allBlocks   = 0
+  private var allBlocks    = 0
   private var orphanBlocks = 0
 
   private val now    = TimeStamp.now()
-  private val fromTs = now.minusUnsafe(Duration.ofHoursUnsafe(48L))
+  private val fromTs = now.minusUnsafe(Duration.ofHoursUnsafe(1L))
 
   private val fromHeights = mutable.Map.empty[ChainIndex, Int]
 
@@ -80,12 +83,15 @@ object HeightGapStatistic extends App {
           hashes.foreachWithIndex { case (blockHash, index) =>
             val isMainChainBlock = index == 0
             val isUncleBlock = !isMainChainBlock && {
-              blockFlow.getMainChainBlockByGhostUncle(ChainIndex.from(blockHash)(config.broker), blockHash) match {
-                case Right(v) => v.isDefined
+              blockFlow.getMainChainBlockByGhostUncle(
+                ChainIndex.from(blockHash)(config.broker),
+                blockHash
+              ) match {
+                case Right(v)    => v.isDefined
                 case Left(error) => throw error
               }
             }
-            val block        = chain.getBlockUnsafe(blockHash)
+            val block = chain.getBlockUnsafe(blockHash)
             miners.get(block.minerLockupScript) match {
               case Some(state) => state.increase(isUncleBlock, isMainChainBlock)
               case None =>
@@ -109,7 +115,7 @@ object HeightGapStatistic extends App {
   miners.toSeq.sortBy(_._2.blockRate(allBlocks)).reverse.foreach { case (lockupScript, state) =>
     val address    = Address.from(lockupScript)
     val uncleRate  = f"${state.uncleRate}%.6f"
-    val orphanRate  = f"${state.orphanRate}%.6f"
+    val orphanRate = f"${state.orphanRate}%.6f"
     val blockRatio = f"${state.blockRate(allBlocks)}%.6f"
     allBlockShares += state.blockRate(allBlocks)
     print(

@@ -70,7 +70,7 @@ object RewardStatistic extends App {
         print(s"$chainIndex, max height: $maxHeight, from: $fromHeight\n")
         val chain = blockFlow.getBlockChain(chainIndex)
         (fromHeight to maxHeight).foreach { height =>
-          val hash = chain.getHashesUnsafe(height).head
+          val hash  = chain.getHashesUnsafe(height).head
           val block = chain.getBlockUnsafe(hash)
           block.coinbase.unsigned.fixedOutputs.zipWithIndex.foreach { case (output, index) =>
             allRewards = allRewards.addUnsafe(output.amount)
