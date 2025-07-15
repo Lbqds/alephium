@@ -50,7 +50,7 @@ object HeightGapStatistic extends App {
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
   private var allBlocks   = 0
-  private var uncleBlocks = 0
+  private var orphanBlocks = 0
 
   private val now    = TimeStamp.now()
   private val fromTs = now.minusUnsafe(Duration.ofHoursUnsafe(48L))
@@ -76,7 +76,7 @@ object HeightGapStatistic extends App {
         (fromHeight to maxHeight).foreach { height =>
           val hashes = chain.getHashesUnsafe(height)
           allBlocks += hashes.length
-          uncleBlocks += hashes.length - 1
+          orphanBlocks += hashes.length - 1
           hashes.foreachWithIndex { case (blockHash, index) =>
             val isMainChainBlock = index == 0
             val isUncleBlock = !isMainChainBlock && {
@@ -95,14 +95,14 @@ object HeightGapStatistic extends App {
             }
           }
         }
-        print(s"$chainIndex, all blocks: $allBlocks, uncle blocks: $uncleBlocks\n")
+        print(s"$chainIndex, all blocks: $allBlocks, orphan blocks: $orphanBlocks\n")
       case Left(error) =>
         print(s"failed to get max height for $chainIndex, error: $error\n")
     }
   }
 
   print(
-    s"========== all blocks: $allBlocks, uncle blocks: $uncleBlocks, uncle rate: ${uncleBlocks.toDouble / allBlocks.toDouble}\n"
+    s"========== all blocks: $allBlocks, orphan blocks: $orphanBlocks, orphan rate: ${orphanBlocks.toDouble / allBlocks.toDouble}\n"
   )
 
   var allBlockShares: Double = 0.0
