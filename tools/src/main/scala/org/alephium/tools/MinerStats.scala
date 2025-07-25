@@ -83,6 +83,7 @@ object MinerStats extends App {
     currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
     while (currentBlock.minerLockupScript == miner.lockupScript) {
       fromTimestamp = currentBlock.timestamp
+      currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
     }
     val parentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
     (toTimestamp.deltaUnsafe(fromTimestamp), parentBlock)
