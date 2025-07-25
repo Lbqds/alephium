@@ -25,7 +25,7 @@ import org.alephium.flow.io.Storages
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
 import org.alephium.protocol.model.{Address, Block}
-import org.alephium.util.{Env, TimeStamp}
+import org.alephium.util.{Duration, Env, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
@@ -87,9 +87,14 @@ object MinerStats extends App {
     }
     val parentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
     val chainIndex  = fromBlock.chainIndex
+    val from = if (toTimestamp == fromTimestamp) {
+      fromTimestamp
+    } else {
+      toTimestamp.minusUnsafe(Duration.ofSecondsUnsafe(8))
+    }
     if (toTimestamp > fromTimestamp) {
       print(
-        s"miner ${miner.toBase58} mining from ${toUtc(fromTimestamp)} to ${toUtc(toTimestamp)} on ${chainIndex.from.value -> chainIndex.to.value}\n"
+        s"miner ${miner.toBase58} mining from ${toUtc(from)} to ${toUtc(toTimestamp)} on ${chainIndex.from.value -> chainIndex.to.value}\n"
       )
     }
     parentBlock
