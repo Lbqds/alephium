@@ -17,13 +17,15 @@
 package org.alephium.tools
 
 import java.nio.file.Paths
+import java.time.{Instant, ZonedDateTime, ZoneOffset}
+import java.time.format.DateTimeFormatter
 
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.io.Storages
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
 import org.alephium.protocol.model.{Address, Block}
-import org.alephium.util.{Duration, Env, TimeStamp}
+import org.alephium.util.{Env, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
@@ -65,14 +67,12 @@ object MinerStats extends App {
       val latestBlock = blockFlow.getBlockChain(chainIndex).getBestTipUnsafe()
       var fromBlock   = blockFlow.getBlockUnsafe(latestBlock)
       (0 until 20).foreach { _ =>
-        val (duration, block) = stats(fromBlock, miner)
-        fromBlock = block
-        print(s"miner ${miner.toBase58} mining ${duration.millis} mills on $chainIndex\n")
+        fromBlock = stats(fromBlock, miner)
       }
     }
   }
 
-  private def stats(fromBlock: Block, miner: Address): (Duration, Block) = {
+  private def stats(fromBlock: Block, miner: Address): Block = {
     var currentBlock = fromBlock
     while (currentBlock.minerLockupScript != miner.lockupScript) {
       currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
@@ -86,6 +86,19 @@ object MinerStats extends App {
       currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
     }
     val parentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
-    (toTimestamp.deltaUnsafe(fromTimestamp), parentBlock)
+    val chainIndex  = fromBlock.chainIndex
+    if (toTimestamp > fromTimestamp) {
+      print(
+        s"miner ${miner.toBase58} mining from ${toUtc(fromTimestamp)} to ${toUtc(toTimestamp)} on ${chainIndex.from.value -> chainIndex.to.value}\n"
+      )
+    }
+    parentBlock
+  }
+
+  private def toUtc(ts: TimeStamp): String = {
+    val utcTime: ZonedDateTime = Instant.ofEpochMilli(ts.millis).atZone(ZoneOffset.UTC)
+
+    val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneOffset.UTC)
+    formatter.format(utcTime)
   }
 }
