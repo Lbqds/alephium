@@ -4048,7 +4048,8 @@
                             ],
                             "scriptSignatures": [
                               "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                            ]
+                            ],
+                            "isConflicted": false
                           }
                         ],
                         "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -4290,7 +4291,8 @@
                               ],
                               "scriptSignatures": [
                                 "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                              ]
+                              ],
+                              "isConflicted": false
                             }
                           ],
                           "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -4538,7 +4540,8 @@
                               ],
                               "scriptSignatures": [
                                 "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                              ]
+                              ],
+                              "isConflicted": false
                             }
                           ],
                           "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -4783,7 +4786,8 @@
                       ],
                       "scriptSignatures": [
                         "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                      ]
+                      ],
+                      "isConflicted": false
                     }
                   ],
                   "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -5007,7 +5011,8 @@
                       ],
                       "scriptSignatures": [
                         "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                      ]
+                      ],
+                      "isConflicted": false
                     }
                   ],
                   "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -5232,7 +5237,8 @@
                         ],
                         "scriptSignatures": [
                           "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                        ]
+                        ],
+                        "isConflicted": false
                       }
                     ],
                     "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -5463,7 +5469,8 @@
                         ],
                         "scriptSignatures": [
                           "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                        ]
+                        ],
+                        "isConflicted": false
                       }
                     ],
                     "nonce": "798e9e137aec7c2d59d9655b4ffa640f301f628bf7c365083bb255f6aa5f89ef",
@@ -7637,7 +7644,8 @@
                       ],
                       "scriptSignatures": [
                         "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                      ]
+                      ],
+                      "isConflicted": false
                     }
                   }
                 }
@@ -7848,7 +7856,8 @@
                       ],
                       "scriptSignatures": [
                         "9e1a35b2931bd04e6780d01c36e3e5337941aa80f173cfe4f4e249c44ab135272b834c1a639db9c89d673a8a30524042b0469672ca845458a5a0cf2cad53221b"
-                      ]
+                      ],
+                      "isConflicted": false
                     }
                   }
                 }
@@ -16873,7 +16882,8 @@
           "contractInputs",
           "generatedOutputs",
           "inputSignatures",
-          "scriptSignatures"
+          "scriptSignatures",
+          "isConflicted"
         ],
         "properties": {
           "unsigned": {
@@ -16907,6 +16917,9 @@
               "type": "string",
               "format": "hex-string"
             }
+          },
+          "isConflicted": {
+            "type": "boolean"
           }
         }
       },
@@ -17471,7 +17484,8 @@
           "contractInputs",
           "generatedOutputs",
           "inputSignatures",
-          "scriptSignatures"
+          "scriptSignatures",
+          "isConflicted"
         ],
         "properties": {
           "unsigned": {
@@ -17505,6 +17519,9 @@
               "type": "string",
               "format": "hex-string"
             }
+          },
+          "isConflicted": {
+            "type": "boolean"
           }
         }
       },
