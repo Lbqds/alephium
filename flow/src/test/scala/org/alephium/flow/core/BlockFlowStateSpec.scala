@@ -24,7 +24,10 @@ import org.alephium.util.{AlephiumSpec, AVector, Bytes, Duration, TimeStamp}
 
 class BlockFlowStateSpec extends AlephiumSpec {
   trait Fixture extends FlowFixture {
-    override val configValues: Map[String, Any] = Map(("alephium.broker.broker-num", 1))
+    override val configValues: Map[String, Any] = Map(
+      ("alephium.broker.broker-num", 1),
+      ("alephium.node.indexes.tx-output-ref-index", "true")
+    )
   }
 
   it should "calculate all the hashes for state update" in new Fixture {
@@ -288,5 +291,17 @@ class BlockFlowStateSpec extends AlephiumSpec {
     worldState.existOutput(output0) isE true
     worldState.existOutput(output1) isE false
     worldState.existOutput(output2) isE false
+  }
+
+  it should "save output ref index for conflicted txs" in new DanubeGroupViewFixture {
+    addAndCheck(blockFlow, emptyBlock(blockFlow, ChainIndex.unsafe(0, 0)))
+
+    val storage = blockFlow.txOutputRefIndexStorage.rightValue
+    val tx0     = block0.nonCoinbase.head
+    tx0.outputRefs.foreach(ref => storage.getOptUnsafe(ref.key).isDefined is true)
+
+    addAndCheck(blockFlow, emptyBlock(blockFlow, ChainIndex.unsafe(2, 2)))
+    val tx1 = block1.nonCoinbase.head
+    tx1.outputRefs.foreach(ref => storage.getOptUnsafe(ref.key).isDefined is false)
   }
 }
