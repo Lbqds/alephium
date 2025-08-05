@@ -302,6 +302,6 @@ class BlockFlowStateSpec extends AlephiumSpec {
 
     addAndCheck(blockFlow, emptyBlock(blockFlow, ChainIndex.unsafe(2, 2)))
     val tx1 = block1.nonCoinbase.head
-    tx1.outputRefs.foreach(ref => storage.getOptUnsafe(ref.key).isDefined is false)
+    tx1.outputRefs.foreach(ref => storage.getOptUnsafe(ref.key).isDefined is true)
   }
 }

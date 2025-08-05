@@ -965,7 +965,7 @@ object BlockFlowState {
         } yield ()
       } else {
         conflictedTxs += tx.id
-        Right(()) // Skip the transaction since its inputs are already spent (conflicted)
+        updateIndexForConflictedTx(worldState, tx, txIndex, targetGroup, block)
       }
     }
   }
@@ -997,7 +997,8 @@ object BlockFlowState {
     shouldUpdateE.flatMap {
       case true =>
         updateStateForOutputs(worldState, tx, txIndex, targetGroup, block)
-      case false => Right(())
+      case false =>
+        updateIndexForConflictedTx(worldState, tx, txIndex, targetGroup, block)
     }
   }
 
@@ -1027,6 +1028,29 @@ object BlockFlowState {
           Some(TxOutputLocator(block.hash, txIndex, index))
         )
       case (_, _) => Right(()) // contract outputs are updated in VM
+    }
+  }
+
+  private def updateIndexForConflictedTx(
+      worldState: WorldState.Cached,
+      tx: Transaction,
+      txIndex: Int,
+      targetGroup: GroupIndex,
+      block: Block
+  )(implicit brokerConfig: GroupConfig): IOResult[Unit] = {
+    if (worldState.txOutputRefIndexState.isDefined) {
+      tx.allOutputs.foreachWithIndexE {
+        case (output: AssetOutput, index) if output.toGroup == targetGroup =>
+          val outputRef = TxOutputRef.from(tx.id, index, output)
+          worldState.addOutputRefIndex(
+            outputRef,
+            tx.id,
+            Some(TxOutputLocator(block.hash, txIndex, index))
+          )
+        case (_, _) => Right(())
+      }
+    } else {
+      Right(())
     }
   }
 
