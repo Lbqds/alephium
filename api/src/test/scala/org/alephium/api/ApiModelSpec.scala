@@ -1664,7 +1664,7 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
   }
 
   it should "encode/decode Transaction" in {
-    val tx = api.Transaction.fromProtocol(transaction)
+    val tx = api.Transaction.fromProtocol(transaction, isConflicted = false)
     val jsonRaw = s"""
                      |{
                      |  "unsigned": ${write(tx.unsigned)},
@@ -1672,14 +1672,15 @@ class ApiModelSpec extends JsonFixture with ApiModelFixture with EitherValues wi
                      |  "contractInputs": ${write(tx.contractInputs)},
                      |  "generatedOutputs": ${write(tx.generatedOutputs)},
                      |  "inputSignatures": ${write(tx.inputSignatures)},
-                     |  "scriptSignatures": ${write(tx.scriptSignatures)}
+                     |  "scriptSignatures": ${write(tx.scriptSignatures)},
+                     |  "isConflicted": false
                      |}""".stripMargin
 
     checkData(tx, jsonRaw)
   }
 
   it should "calc output ref correctly" in {
-    val tx = api.Transaction.fromProtocol(transaction)
+    val tx = api.Transaction.fromProtocol(transaction, isConflicted = false)
     tx.unsigned.fixedOutputs.zipWithIndex.foreach { case (output, index) =>
       output.key is transaction.fixedOutputRefs(index).key.value
     }

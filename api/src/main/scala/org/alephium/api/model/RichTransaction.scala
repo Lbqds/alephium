@@ -28,14 +28,16 @@ final case class RichTransaction(
     contractInputs: AVector[RichContractInput],
     generatedOutputs: AVector[Output],
     inputSignatures: AVector[ByteString],
-    scriptSignatures: AVector[ByteString]
+    scriptSignatures: AVector[ByteString],
+    isConflicted: Boolean
 )
 
 object RichTransaction {
   def from(
       transaction: Transaction,
       assetInputs: AVector[RichAssetInput],
-      contractInputs: AVector[RichContractInput]
+      contractInputs: AVector[RichContractInput],
+      isConflicted: Boolean
   ): RichTransaction = {
     val richUnsigned = RichUnsignedTx.fromProtocol(transaction.unsigned, assetInputs)
 
@@ -47,7 +49,8 @@ object RichTransaction {
         Output.from(out, transaction.unsigned.id, index + transaction.unsigned.fixedOutputs.length)
       },
       inputSignatures = transaction.inputSignatures.map(sig => serialize(sig)),
-      scriptSignatures = transaction.scriptSignatures.map(sig => serialize(sig))
+      scriptSignatures = transaction.scriptSignatures.map(sig => serialize(sig)),
+      isConflicted
     )
   }
 }

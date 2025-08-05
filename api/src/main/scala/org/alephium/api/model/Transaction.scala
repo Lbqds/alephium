@@ -30,7 +30,8 @@ final case class Transaction(
     contractInputs: AVector[OutputRef],
     generatedOutputs: AVector[Output],
     inputSignatures: AVector[ByteString],
-    scriptSignatures: AVector[ByteString]
+    scriptSignatures: AVector[ByteString],
+    isConflicted: Boolean
 ) {
   def toProtocol()(implicit networkConfig: NetworkConfig): Either[String, protocol.Transaction] = {
     for {
@@ -51,7 +52,7 @@ final case class Transaction(
 }
 
 object Transaction {
-  def fromProtocol(transaction: protocol.Transaction): Transaction = {
+  def fromProtocol(transaction: protocol.Transaction, isConflicted: Boolean): Transaction = {
     Transaction(
       UnsignedTx.fromProtocol(transaction.unsigned),
       transaction.scriptExecutionOk,
@@ -60,7 +61,8 @@ object Transaction {
         Output.from(out, transaction.unsigned.id, index + transaction.unsigned.fixedOutputs.length)
       },
       transaction.inputSignatures.map(sig => serialize(sig)),
-      transaction.scriptSignatures.map(sig => serialize(sig))
+      transaction.scriptSignatures.map(sig => serialize(sig)),
+      isConflicted
     )
   }
 }
