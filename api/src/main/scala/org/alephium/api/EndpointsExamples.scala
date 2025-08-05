@@ -155,7 +155,8 @@ trait EndpointsExamples extends ErrorExamples {
     AVector(outputRef),
     AVector(outputAsset.upCast(), outputContract),
     AVector(signature.bytes),
-    AVector(signature.bytes)
+    AVector(signature.bytes),
+    isConflicted = false
   )
 
   private val transactionTemplate = TransactionTemplate(
@@ -216,7 +217,8 @@ trait EndpointsExamples extends ErrorExamples {
     contractInputs = AVector.empty,
     generatedOutputs = AVector(outputContract),
     AVector(signature.bytes),
-    AVector(signature.bytes)
+    AVector(signature.bytes),
+    isConflicted = false
   )
 
   private lazy val richBlockEntry = RichBlockEntry(

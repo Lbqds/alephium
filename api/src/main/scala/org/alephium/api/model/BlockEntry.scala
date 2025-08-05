@@ -20,7 +20,15 @@ import akka.util.ByteString
 
 import org.alephium.protocol.Hash
 import org.alephium.protocol.config.NetworkConfig
-import org.alephium.protocol.model.{Block, BlockDeps, BlockHash, BlockHeader, Nonce, Target}
+import org.alephium.protocol.model.{
+  Block,
+  BlockDeps,
+  BlockHash,
+  BlockHeader,
+  Nonce,
+  Target,
+  TransactionId
+}
 import org.alephium.util.{AVector, TimeStamp}
 
 final case class BlockEntry(
@@ -68,7 +76,7 @@ final case class BlockEntry(
 }
 
 object BlockEntry {
-  def from(block: Block, height: Int)(implicit
+  def from(block: Block, height: Int, conflictedTxs: Option[AVector[TransactionId]])(implicit
       networkConfig: NetworkConfig
   ): Either[String, BlockEntry] = {
     val ghostUncleBlockDataEither = {
@@ -89,7 +97,10 @@ object BlockEntry {
         chainTo = block.header.chainIndex.to.value,
         height = height,
         deps = block.header.blockDeps.deps,
-        transactions = block.transactions.map(Transaction.fromProtocol(_)),
+        transactions = block.transactions.map { tx =>
+          val isConflicted = conflictedTxs.exists(_.contains(tx.id))
+          Transaction.fromProtocol(tx, isConflicted)
+        },
         nonce = block.header.nonce.value,
         version = block.header.version,
         depStateHash = block.header.depStateHash,
