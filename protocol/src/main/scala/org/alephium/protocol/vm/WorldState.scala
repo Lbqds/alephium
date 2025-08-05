@@ -598,12 +598,20 @@ object WorldState {
     ): IOResult[Unit] = {
       for {
         _ <- outputState.put(outputRef, output)
-        _ <- txOutputRefIndexState match {
-          case Some(state) =>
-            TxOutputRefIndexStorage.store(state, outputRef.key, txId, txOutputLocatorOpt)
-          case None => Right(())
-        }
+        _ <- addOutputRefIndex(outputRef, txId, txOutputLocatorOpt)
       } yield ()
+    }
+
+    def addOutputRefIndex(
+        outputRef: TxOutputRef,
+        txId: TransactionId,
+        txOutputLocatorOpt: Option[TxOutputLocator]
+    ): IOResult[Unit] = {
+      txOutputRefIndexState match {
+        case Some(state) =>
+          TxOutputRefIndexStorage.store(state, outputRef.key, txId, txOutputLocatorOpt)
+        case None => Right(())
+      }
     }
 
     def createContractLegacyUnsafe(
