@@ -576,6 +576,7 @@ trait BlockFlowState extends FlowTipsUtil {
       diffs  <- getHashesForUpdates(mainGroup, blockDeps)
       blocks <- diffs.mapE(hash => getBlockChain(hash).getBlock(hash))
       _ <- blocks.stableSortBy(_.timestamp).foreachE { block =>
+        println(s"======= updateWorldStateDanube ${block.hash.toHexString}")
         val chainIndex = block.chainIndex
         val isInBlockFlow =
           if (chainIndex.to == mainGroup && !chainIndex.isIntraGroup) {

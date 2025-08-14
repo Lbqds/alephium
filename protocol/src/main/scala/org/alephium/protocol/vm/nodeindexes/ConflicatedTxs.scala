@@ -70,6 +70,7 @@ final case class CachedConflictedTxsStorage(
       block: BlockHash,
       txs: AVector[TransactionId]
   ): IOResult[Unit] = {
+    println(s"======= add conflicts ${checkpointBlock.toHexString}, ${block.toHexString}, ${txs}")
     val elem0 = ConflictedTxsPerBlock(block, txs)
     val update0 = conflictedTxsPerIntraBlock.getOpt(checkpointBlock).flatMap {
       case Some(conflicts) =>
