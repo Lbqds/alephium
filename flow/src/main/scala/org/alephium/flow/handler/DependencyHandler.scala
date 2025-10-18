@@ -92,6 +92,7 @@ class DependencyHandler(
       val missingUncles = ArrayBuffer.empty[BlockHash]
       datas.foreach(addPendingData(_, broker, origin, missingUncles))
       if (missingUncles.nonEmpty) {
+        log.info(s"====== missing uncles: ${missingUncles.map(_.toHexString)}")
         ActorRefT[BrokerHandler.Command](sender()) ! BrokerHandler.DownloadBlocks(
           AVector.from(missingUncles)
         )
@@ -154,10 +155,12 @@ trait DependencyHandlerState extends IOBaseActor with EventStream.Publisher {
   val pending = Cache.fifo[BlockHash, PendingStatus] {
     (map: LinkedHashMap[BlockHash, PendingStatus], eldest: JMap.Entry[BlockHash, PendingStatus]) =>
       if (map.size > cacheSize) {
+        log.info(s"======= pending cache overflow")
         removePending(eldest.getKey())
       }
       val threshold = TimeStamp.now().minusUnsafe(networkSetting.dependencyExpiryPeriod)
       if (eldest.getValue().timestamp <= threshold) {
+        log.info(s"======= pending dependency expired")
         cleanPendings(map.entrySet().iterator().asScala, threshold)
       }
   }
