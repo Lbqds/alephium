@@ -34,7 +34,7 @@ import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.BrokerConfig
 import org.alephium.protocol.message.{P2PV1, P2PV2, P2PVersion}
 import org.alephium.protocol.model._
-import org.alephium.util.{ActorRefT, AVector, TimeStamp}
+import org.alephium.util.{ActorRefT, AVector, Duration, TimeStamp}
 import org.alephium.util.EventStream.Publisher
 
 // scalastyle:off file.size.limit
@@ -70,8 +70,11 @@ object BlockFlowSynchronizer {
       result: AVector[(SyncState.BlockDownloadTask, AVector[Block], Boolean)]
   ) extends V2Command
   case object ContinueDownload extends V2Command
-  final case class AddFlowData[T <: FlowData](datas: AVector[T], dataOrigin: DataOrigin)
-      extends Command
+  final case class AddFlowData[T <: FlowData](
+      datas: AVector[T],
+      dataOrigin: DataOrigin,
+      isNewBlocks: Boolean
+  ) extends Command
 }
 
 class BlockFlowSynchronizer(val blockflow: BlockFlow, val allHandlers: AllHandlers)(implicit
@@ -114,10 +117,10 @@ class BlockFlowSynchronizer(val blockflow: BlockFlow, val allHandlers: AllHandle
       // Ignoring them may trigger a new round of synchronization using v2.
       if (!isSyncingUsingV2 || isNearSynced) handleBlockAnnouncement(hash)
 
-    case AddFlowData(datas, dataOrigin) =>
+    case AddFlowData(datas, dataOrigin, isNewBlocks) =>
       // When the node is synced, it should download new blocks only through block announcements.
       // Ignoring them may trigger a new round of synchronization using v2.
-      if (!isSyncingUsingV2 || isNearSynced) {
+      if (!isNewBlocks || !isSyncingUsingV2 || isNearSynced) {
         val message = DependencyHandler.AddFlowData(datas, dataOrigin)
         allHandlers.dependencyHandler.tell(message, sender())
       }
@@ -388,15 +391,41 @@ trait SyncState { _: BlockFlowSynchronizer =>
     brokerConfig.chainIndexes.forall(bestChainTips.contains)
   }
 
+  private var lastCheckTs: TimeStamp = TimeStamp.now()
+  private val lastChainTips = FlattenIndexedArray.empty[ChainTip]
+
   def handleSelfChainState(chainTips: AVector[ChainTip]): Unit = {
     chainTips.foreach { chainTip =>
       this.selfChainTips(chainTip.chainIndex) = Some(chainTip)
+    }
+    val isEqual = chainTips.forall { chainTip =>
+      this.selfChainTips(chainTip.chainIndex) == this.lastChainTips(chainTip.chainIndex)
+    }
+    val now = TimeStamp.now()
+    if (now.deltaUnsafe(this.lastCheckTs) > Duration.ofMinutesUnsafe(2) && isEqual) {
+      logStat()
+      allHandlers.dependencyHandler ! DependencyHandler.LogStat
+    }
+    if (!isEqual) {
+      lastCheckTs = now
+    }
+    chainTips.foreach { chainTip =>
+      this.lastChainTips(chainTip.chainIndex) = Some(chainTip)
     }
     _isNearSynced = checkIsNearSynced
     if (!isSyncingUsingV2) {
       tryStartSync()
     } else if (isSynced) {
       tryStartNextSyncRound()
+    }
+  }
+
+  private def logStat(): Unit = {
+    syncingChains.foreach { chain =>
+      log.info(s"==== chain index ${chain.chainIndex}")
+      val pendingQueue = chain.pendingQueue.keys.toSet
+      log.info(s"==== pending queue: ${chain.pendingQueue.size}, ${pendingQueue.map(_.toHexString)}")
+      log.info(s"==== validating: ${chain.validating.size}, ${chain.validating.map(_.toHexString)}")
     }
   }
 
@@ -408,6 +437,7 @@ trait SyncState { _: BlockFlowSynchronizer =>
       }
       val block = event.data
       if (isBlockValid) {
+        log.info(s"==== block validated ${block.hash.toHexString}")
         onBlockProcessed(block)
       } else {
         log.info(s"Block ${block.hash.toHexString} is invalid, resync")

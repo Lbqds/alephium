@@ -116,7 +116,7 @@ trait BrokerHandler extends HandshakeHandler with PingPongHandler with FlowDataH
   def exchangingV2: Receive
 
   def handleNewBlock(block: Block): Unit =
-    handleFlowData(AVector(block), dataOrigin, isBlock = true)
+    handleFlowData(AVector(block), dataOrigin, isBlock = true, isNewBlocks = true)
 
   // scalastyle:off method.length
   def exchangingCommon: Receive = {
@@ -141,7 +141,7 @@ trait BrokerHandler extends HandshakeHandler with PingPongHandler with FlowDataH
           log.debug(
             s"Received #${blocks.length} blocks ${Utils.showDataDigest(blocks)} from $remoteAddress with $requestId"
           )
-          handleFlowData(blocks, dataOrigin, isBlock = true)
+          handleFlowData(blocks, dataOrigin, isBlock = true, isNewBlocks = false)
         case Right(_) =>
           // Dead branch since deserialized BlocksResponse should always contain blocks
           log.error("Unexpected BlocksResponse data")
@@ -158,12 +158,12 @@ trait BrokerHandler extends HandshakeHandler with PingPongHandler with FlowDataH
       log.debug(
         s"Received new block header ${header.hash.shortHex} from $remoteAddress"
       )
-      handleFlowData(AVector(header), dataOrigin, isBlock = false)
+      handleFlowData(AVector(header), dataOrigin, isBlock = false, isNewBlocks = false)
     case Received(HeadersResponse(requestId, headers)) =>
       log.debug(
         s"Received #${headers.length} headers ${Utils.showDataDigest(headers)} from $remoteAddress with $requestId"
       )
-      handleFlowData(headers, dataOrigin, isBlock = false)
+      handleFlowData(headers, dataOrigin, isBlock = false, isNewBlocks = false)
     case Received(HeadersRequest(requestId, hashes)) =>
       escapeIOError(hashes.mapE(blockflow.getBlockHeader), "load headers") { headers =>
         send(HeadersResponse(requestId, headers))
@@ -356,10 +356,11 @@ trait FlowDataHandler extends BaseHandler {
 
   @inline final protected def handleValidFlowData[T <: FlowData](
       datas: AVector[T],
-      dataOrigin: DataOrigin
+      dataOrigin: DataOrigin,
+      isNewBlocks: Boolean
   ): Unit = {
     if (networkSetting.enableP2pV2) {
-      blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(datas, dataOrigin)
+      blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(datas, dataOrigin, isNewBlocks)
     } else {
       val message = DependencyHandler.AddFlowData(datas, dataOrigin)
       allHandlers.dependencyHandler ! message
@@ -369,10 +370,11 @@ trait FlowDataHandler extends BaseHandler {
   def handleFlowData[T <: FlowData](
       datas: AVector[T],
       dataOrigin: DataOrigin,
-      isBlock: Boolean
+      isBlock: Boolean,
+      isNewBlocks: Boolean
   ): Unit = {
     if (validateFlowData(datas, isBlock)) {
-      handleValidFlowData(datas, dataOrigin)
+      handleValidFlowData(datas, dataOrigin, isNewBlocks)
     }
   }
 }
