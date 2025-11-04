@@ -55,6 +55,7 @@ object DependencyHandler {
   final case class Invalid(data: BlockHash)                                          extends Command
   final case object GetPendings                                                      extends Command
   case object CleanPendings                                                          extends Command
+  case object LogStat                                                                extends Command
 
   sealed trait Event
   final case class Pendings(datas: AVector[BlockHash]) extends Event
@@ -88,12 +89,13 @@ class DependencyHandler(
 
   override def receive: Receive = {
     case AddFlowData(datas, origin) =>
+      log.info(s"==== adding flow data: ${datas.map(_.hash.toHexString)}")
       val broker        = ActorRefT[ChainHandler.Event](sender())
       val missingUncles = ArrayBuffer.empty[BlockHash]
       datas.foreach(addPendingData(_, broker, origin, missingUncles))
       if (missingUncles.nonEmpty) {
         ActorRefT[BrokerHandler.Command](sender()) ! BrokerHandler.DownloadBlocks(
-          AVector.from(missingUncles)
+          AVector.from(missingUncles.toSet)
         )
       }
       processReadies()
@@ -112,6 +114,36 @@ class DependencyHandler(
         DependencyHandler.CleanPendings,
         networkSetting.dependencyExpiryPeriod.divUnsafe(2)
       )
+    case LogStat => logStat()
+  }
+
+  @SuppressWarnings(Array("org.wartremover.warts.Recursion"))
+  private def getMissingDeps(
+    cache: mutable.Map[BlockHash, mutable.Set[BlockHash]],
+    hash: BlockHash
+  ): mutable.Set[BlockHash] = {
+    cache.get(hash) match {
+      case Some(hashes) => hashes
+      case None =>
+        val base = missingIndex.getOrElse(hash, ArrayBuffer.empty)
+        val all = mutable.Set.from(base ++ base.flatMap(getMissingDeps(cache, _)))
+        cache(hash) = all
+        all
+    }
+  }
+
+  def logStat(): Unit = {
+    val cache = mutable.Map.empty[BlockHash, mutable.Set[BlockHash]]
+    missingIndex.foreachEntry { case (blockHash, _) =>
+      getMissingDeps(cache, blockHash)
+    }
+    val sorted = cache.toSeq.sortBy(_._2.size).reverse
+    log.info(s"==== pending: ${pending.size}, ${pending.keys().map(_.toHexString).toSeq}")
+    log.info(s"==== processing: ${processing.size}, ${processing.map(_.toHexString)}")
+    log.info(s"==== readies: ${readies.size}, ${readies.map(_.toHexString)}")
+    log.info(s"==== missing: ${missing.size}, ${missing.map(v => s"${v._1.toHexString} -> ${v._2.map(_.toHexString)}")}")
+    log.info(s"==== missing deps: ${missing.size}, ${sorted.map(v => s"${v._1.toHexString} -> ${v._2.map(_.toHexString)}")}")
+    sys.exit(1)
   }
 
   def processReadies(): Unit = {
@@ -154,10 +186,12 @@ trait DependencyHandlerState extends IOBaseActor with EventStream.Publisher {
   val pending = Cache.fifo[BlockHash, PendingStatus] {
     (map: LinkedHashMap[BlockHash, PendingStatus], eldest: JMap.Entry[BlockHash, PendingStatus]) =>
       if (map.size > cacheSize) {
+        log.info(s"==== pending cache overflow")
         removePending(eldest.getKey())
       }
       val threshold = TimeStamp.now().minusUnsafe(networkSetting.dependencyExpiryPeriod)
       if (eldest.getValue().timestamp <= threshold) {
+        log.info(s"==== pending dependency expired")
         cleanPendings(map.entrySet().iterator().asScala, threshold)
       }
   }
@@ -200,9 +234,10 @@ trait DependencyHandlerState extends IOBaseActor with EventStream.Publisher {
               missing(data.hash) = ArrayBuffer.from(missingDeps.toIterable)
 
               if (uncles.nonEmpty) {
-                missingGhostUncles ++= uncles.filter(hash =>
+                val filtered = uncles.filter(hash =>
                   missingDeps.contains(hash) && !(missing.contains(hash) || readies.contains(hash))
                 )
+                missingGhostUncles ++= filtered
               }
 
               missingDeps.foreach { dep =>

@@ -34,7 +34,7 @@ import org.alephium.protocol.ALPH
 import org.alephium.protocol.config.BrokerConfig
 import org.alephium.protocol.message.{P2PV1, P2PV2, P2PVersion}
 import org.alephium.protocol.model._
-import org.alephium.util.{ActorRefT, AVector, TimeStamp}
+import org.alephium.util.{ActorRefT, AVector, Duration, TimeStamp}
 import org.alephium.util.EventStream.Publisher
 
 // scalastyle:off file.size.limit
@@ -392,15 +392,42 @@ trait SyncState { _: BlockFlowSynchronizer =>
     brokerConfig.chainIndexes.forall(bestChainTips.contains)
   }
 
+  private var lastCheckTs: TimeStamp = TimeStamp.now()
+  private val lastChainTips = FlattenIndexedArray.empty[ChainTip]
+
   def handleSelfChainState(chainTips: AVector[ChainTip]): Unit = {
     chainTips.foreach { chainTip =>
       this.selfChainTips(chainTip.chainIndex) = Some(chainTip)
+    }
+    val isEqual = chainTips.forall { chainTip =>
+      this.selfChainTips(chainTip.chainIndex) == this.lastChainTips(chainTip.chainIndex)
+    }
+    val now = TimeStamp.now()
+    if (now.deltaUnsafe(this.lastCheckTs) > Duration.ofMinutesUnsafe(5) && isEqual) {
+      logStat()
+      lastCheckTs = now
+      allHandlers.dependencyHandler ! DependencyHandler.LogStat
+    }
+    if (!isEqual) {
+      lastCheckTs = now
+    }
+    chainTips.foreach { chainTip =>
+      this.lastChainTips(chainTip.chainIndex) = Some(chainTip)
     }
     _isNearSynced = checkIsNearSynced
     if (!isSyncingUsingV2) {
       tryStartSync()
     } else if (isSynced) {
       tryStartNextSyncRound()
+    }
+  }
+
+  private def logStat(): Unit = {
+    syncingChains.foreach { chain =>
+      log.info(s"==== chain index ${chain.chainIndex}")
+      val pendingQueue = chain.pendingQueue.keys.toSeq
+      log.info(s"==== pending queue: ${chain.pendingQueue.size}, ${pendingQueue.map(_.toHexString)}")
+      log.info(s"==== validating: ${chain.validating.size}, ${chain.validating.map(_.toHexString)}")
     }
   }
 
@@ -412,6 +439,7 @@ trait SyncState { _: BlockFlowSynchronizer =>
       }
       val block = event.data
       if (isBlockValid) {
+        log.info(s"==== block validated ${block.hash.toHexString}")
         onBlockProcessed(block)
       } else {
         log.info(s"Block ${block.hash.toHexString} is invalid, resync")
@@ -838,6 +866,7 @@ object SyncState {
             blocks
           }
           pendingQueue.addAll(blockAndUncles.map(b => (b.block.hash, b)))
+          logger.info(s"==== adding to pending queue in $chainIndex: ${blockAndUncles.toSeq.map(_.block.hash.toHexString)}")
           batchIds.remove(batchId)
           downloadedBlocks.remove(batchId)
           moveToBlockQueue()
