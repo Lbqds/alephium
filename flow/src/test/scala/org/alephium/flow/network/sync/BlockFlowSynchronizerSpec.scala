@@ -262,7 +262,11 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     blockFlowSynchronizerActor.isNodeSynced is false
     blockFlowSynchronizerActor.isSyncingUsingV2 is false
     val block = emptyBlock(blockFlow, ChainIndex.unsafe(0, 0))
-    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(AVector(block), DataOrigin.Local)
+    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(
+      AVector(block),
+      DataOrigin.Local,
+      true
+    )
     eventually(
       allProbes.dependencyHandler.expectMsg(
         DependencyHandler.AddFlowData(AVector(block), DataOrigin.Local)
@@ -270,14 +274,33 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     )
 
     blockFlowSynchronizerActor.isSyncingUsingV2 = true
-    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(AVector(block), DataOrigin.Local)
+    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(
+      AVector(block),
+      DataOrigin.Local,
+      true
+    )
     allProbes.dependencyHandler.expectNoMessage()
+
+    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(
+      AVector(block),
+      DataOrigin.Local,
+      false
+    )
+    eventually(
+      allProbes.dependencyHandler.expectMsg(
+        DependencyHandler.AddFlowData(AVector(block), DataOrigin.Local)
+      )
+    )
 
     val chainTips = genChainTips
     blockFlowSynchronizer ! FlowHandler.UpdateChainState(chainTips)
     blockFlowSynchronizer ! BlockFlowSynchronizer.UpdateChainState(chainTips, false)
     eventually(blockFlowSynchronizerActor.isNearSynced is true)
-    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(AVector(block), DataOrigin.Local)
+    blockFlowSynchronizer ! BlockFlowSynchronizer.AddFlowData(
+      AVector(block),
+      DataOrigin.Local,
+      true
+    )
     eventually(
       allProbes.dependencyHandler.expectMsg(
         DependencyHandler.AddFlowData(AVector(block), DataOrigin.Local)

@@ -86,6 +86,11 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
     val block = emptyBlock(blockFlow, chainIndex)
     brokerHandler ! BaseBrokerHandler.Received(NewBlock(block))
     eventually(brokerHandlerActor.seenBlocks.contains(block.hash) is true)
+    eventually(
+      blockFlowSynchronizer.expectMsg(
+        BlockFlowSynchronizer.AddFlowData(AVector(block), dataOrigin, true)
+      )
+    )
   }
 
   it should "ignore the duplicated block hash" in new Fixture {

@@ -198,7 +198,7 @@ class BrokerHandlerSpec extends AlephiumActorSpec {
     brokerHandler ! BrokerHandler.Received(response)
     eventually {
       blockFlowSynchronizer.expectMsg(
-        BlockFlowSynchronizer.AddFlowData(AVector(block), DataOrigin.Local)
+        BlockFlowSynchronizer.AddFlowData(AVector(block), DataOrigin.Local, false)
       )
       allHandlerProbes.dependencyHandler.expectNoMessage()
     }

@@ -71,7 +71,7 @@ trait BrokerHandler extends BaseBrokerHandler with SyncV2Handler {
     val blocks = AVector(block)
     if (validateFlowData(blocks, isBlock = true)) {
       seenBlocks.put(block.hash, ())
-      handleValidFlowData(blocks, dataOrigin)
+      handleValidFlowData(blocks, dataOrigin, isNewBlocks = true)
     }
   }
 

@@ -70,8 +70,11 @@ object BlockFlowSynchronizer {
       result: AVector[(SyncState.BlockDownloadTask, Option[AVector[BlocksAtHeight]])]
   ) extends V2Command
   case object ContinueDownload extends V2Command
-  final case class AddFlowData[T <: FlowData](datas: AVector[T], dataOrigin: DataOrigin)
-      extends Command
+  final case class AddFlowData[T <: FlowData](
+      datas: AVector[T],
+      dataOrigin: DataOrigin,
+      isNewBlocks: Boolean
+  ) extends Command
 }
 
 class BlockFlowSynchronizer(val blockflow: BlockFlow, val allHandlers: AllHandlers)(implicit
@@ -114,10 +117,10 @@ class BlockFlowSynchronizer(val blockflow: BlockFlow, val allHandlers: AllHandle
       // Ignoring them may trigger a new round of synchronization using v2.
       if (!isSyncingUsingV2 || isNearSynced) handleBlockAnnouncement(hash)
 
-    case AddFlowData(datas, dataOrigin) =>
+    case AddFlowData(datas, dataOrigin, isNewBlocks) =>
       // When the node is synced, it should download new blocks only through block announcements.
       // Ignoring them may trigger a new round of synchronization using v2.
-      if (!isSyncingUsingV2 || isNearSynced) {
+      if (!isNewBlocks || !isSyncingUsingV2 || isNearSynced) {
         val message = DependencyHandler.AddFlowData(datas, dataOrigin)
         allHandlers.dependencyHandler.tell(message, sender())
       }
