@@ -528,9 +528,8 @@ trait SyncV2Handler { _: BrokerHandler =>
         }
     if (isValid) {
       val result = tasks.mapWithIndex { case (task, index) =>
-        val blocks  = blockss(index)
-        val isValid = SyncV2Handler.validateBlocks(blocks, task.size, task.toHeader)
-        (task, blocks, isValid)
+        val blocks = SyncV2Handler.validateBlocks(blockss(index), task)
+        (task, blocks)
       }
       blockFlowSynchronizer ! BlockFlowSynchronizer.UpdateBlockDownloaded(result)
     } else {
@@ -929,33 +928,46 @@ object SyncV2Handler {
    * and verifies that each block's hash matches the expected hash in the chain.
    *
    * @param blocks The vector of blocks to validate
-   * @param mainChainBlockSize The expected number of blocks in the main chain
-   * @param toHeaderOpt Optional target header that the chain should connect to
-   * @return true if the blocks form a valid chain of the expected size, false otherwise
+   * @param task The block download task
+   * @return Some(AVector[BlocksAtHeight]) if the blocks form a valid chain of the expected size, None otherwise
    */
   // format: on
   def validateBlocks(
       blocks: AVector[Block],
-      mainChainBlockSize: Int,
-      toHeaderOpt: Option[BlockHeader]
-  ): Boolean = {
+      task: SyncState.BlockDownloadTask
+  ): Option[AVector[BlocksAtHeight]] = {
+    val mainChainBlockSize = task.size
+    val toHeaderOpt        = task.toHeader
     assume(mainChainBlockSize > 0)
 
     if (blocks.length < mainChainBlockSize) {
-      false
+      None
     } else {
-      val startHash        = toHeaderOpt.map(_.hash).getOrElse(blocks.last.hash)
-      var nextBlockToCheck = startHash
-      var remainingBlocks  = mainChainBlockSize
+      val allBlocks = new mutable.ArrayBuffer[BlocksAtHeight](mainChainBlockSize)
+      val startHash = toHeaderOpt.map(_.hash).getOrElse(blocks.last.hash)
+
+      var nextBlockToCheck   = startHash
+      var currentFromIndex   = blocks.length
+      var currentToIndex     = blocks.length
+      var currentBlockHeight = task.toHeight
 
       for (block <- blocks.reverseIterator) {
+        currentFromIndex -= 1
         if (block.hash == nextBlockToCheck) {
+          allBlocks.addOne(
+            BlocksAtHeight(
+              block,
+              blocks.slice(currentFromIndex + 1, currentToIndex)
+            )
+          )
+
+          currentToIndex = currentFromIndex
+          currentBlockHeight -= 1
           nextBlockToCheck = block.parentHash
-          remainingBlocks -= 1
         }
       }
 
-      remainingBlocks == 0
+      if (currentBlockHeight + 1 == task.fromHeight) Some(AVector.from(allBlocks.reverse)) else None
     }
   }
 }

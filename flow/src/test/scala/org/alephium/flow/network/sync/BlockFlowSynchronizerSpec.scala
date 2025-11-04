@@ -18,6 +18,7 @@ package org.alephium.flow.network.sync
 
 import scala.collection.mutable
 import scala.reflect.ClassTag
+import scala.util.Random
 
 import akka.actor.{PoisonPill, Props}
 import akka.testkit.{EventFilter, TestActorRef, TestProbe}
@@ -26,7 +27,7 @@ import org.scalacheck.Gen
 import org.alephium.flow.FlowFixture
 import org.alephium.flow.handler.{ChainHandler, DependencyHandler, FlowHandler, TestUtils}
 import org.alephium.flow.model.DataOrigin
-import org.alephium.flow.network.{InterCliqueManager, MaxRequestNum}
+import org.alephium.flow.network.{BlocksAtHeight, InterCliqueManager, MaxRequestNum}
 import org.alephium.flow.network.broker.{
   BrokerHandler,
   ChainTipInfo,
@@ -709,11 +710,13 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     blockFlowSynchronizerActor.isSyncingUsingV2 = true
     val syncingChain = addSyncingChain(chainIndex, 200, brokerActor)
 
-    val invalidTask = BlockDownloadTask(chainIndex, 21, 70, None)
-    val task0       = BlockDownloadTask(chainIndex, 1, 50, None)
-    val task1       = BlockDownloadTask(chainIndex, 51, 100, None)
-    val blocks0     = AVector(emptyBlock(blockFlow, chainIndex))
-    val blocks1     = AVector(emptyBlock(blockFlow, chainIndex))
+    val invalidTask     = BlockDownloadTask(chainIndex, 21, 70, None)
+    val task0           = BlockDownloadTask(chainIndex, 1, 50, None)
+    val task1           = BlockDownloadTask(chainIndex, 51, 100, None)
+    val blocks0         = AVector(emptyBlock(blockFlow, chainIndex))
+    val blocksAtHeight0 = AVector(BlocksAtHeight(blocks0.head, AVector.empty))
+    val blocks1         = AVector(emptyBlock(blockFlow, chainIndex))
+    val blocksAtHeight1 = AVector(BlocksAtHeight(blocks1.head, AVector.empty))
     syncingChain.batchIds.addAll(Seq(task0.id, task1.id))
     brokerStatus.requestNum is 0
     brokerStatus.pendingTasks.isEmpty is true
@@ -725,14 +728,14 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     syncingChain.downloadedBlocks.isEmpty is true
     syncingChain.pendingQueue.isEmpty is true
     blockFlowSynchronizer.tell(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((invalidTask, blocks0, true))),
+      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((invalidTask, Some(blocksAtHeight0)))),
       brokerActor.ref
     )
     syncingChain.downloadedBlocks.isEmpty is true
     syncingChain.pendingQueue.isEmpty is true
 
     blockFlowSynchronizer.tell(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task1, blocks1, true))),
+      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task1, Some(blocksAtHeight1)))),
       brokerActor.ref
     )
     syncingChain.downloadedBlocks.keys.toSet is Set(task1.id)
@@ -740,7 +743,7 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     allProbes.dependencyHandler.expectNoMessage()
 
     blockFlowSynchronizer.tell(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task0, blocks0, true))),
+      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task0, Some(blocksAtHeight0)))),
       brokerActor.ref
     )
     syncingChain.downloadedBlocks.isEmpty is true
@@ -883,7 +886,7 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     brokerStatus0.missedBlocks.isEmpty is true
     brokerStatus1.missedBlocks.isEmpty is true
     blockFlowSynchronizer.tell(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, AVector.empty, false))),
+      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, None))),
       brokerActor0.ref
     )
     brokerStatus0.missedBlocks.size is 1
@@ -892,7 +895,7 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     probe1.expectMsg(BrokerHandler.DownloadBlockTasks(AVector(task)))
 
     blockFlowSynchronizer.tell(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, AVector.empty, true))),
+      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, Some(AVector.empty)))),
       brokerActor1.ref
     )
     syncingChain.isSkeletonFilled is true
@@ -928,7 +931,7 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     brokerStatus1.updateTips(bestChainTips)
 
     blockFlowSynchronizer.tell(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, AVector.empty, false))),
+      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, None))),
       brokerActor0.ref
     )
     probe1.expectMsg(BrokerHandler.DownloadBlockTasks(AVector(task)))
@@ -939,7 +942,7 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
 
     EventFilter.debug(start = "Clear syncing state and resync", occurrences = 1).intercept {
       blockFlowSynchronizer.tell(
-        BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, AVector.empty, false))),
+        BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task, None))),
         brokerActor1.ref
       )
     }
@@ -1354,28 +1357,56 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
   it should "handle downloaded blocks" in new SyncStatePerChainFixture {
     import SyncState._
 
-    val state      = newState()
-    val batchId0   = BlockBatch(1, 4)
-    val batchId1   = BlockBatch(5, 8)
-    val blocks0    = AVector.fill(4)(emptyBlock(blockFlow, chainIndex))
-    val blocks1    = AVector.fill(4)(emptyBlock(blockFlow, chainIndex))
+    def getBlocksAtHeight(heights: AVector[Int]) = {
+      heights.map { height =>
+        val hashes = blockFlow.getHashes(chainIndex, height).rightValue
+        val blocks = hashes.map(blockFlow.getBlockUnsafe)
+        BlocksAtHeight(blocks.head, blocks.tail)
+      }
+    }
+
+    val state = newState()
+    (0 until 8).foreach { _ =>
+      val uncleSize = Random.nextInt(5)
+      val blocks = (0 until uncleSize + 1).map { _ =>
+        emptyBlock(blockFlow, chainIndex)
+      }
+      addAndCheck(blockFlow, blocks: _*)
+    }
+
+    val batchId0        = BlockBatch(1, 4)
+    val batchId1        = BlockBatch(5, 8)
+    val blocksAtHeight0 = getBlocksAtHeight(AVector.from(1 to 4))
+    val blocksAtHeight1 = getBlocksAtHeight(AVector.from(5 to 8))
+
     val fromBroker = (state.originBroker, brokerInfo)
     state.batchIds.isEmpty is true
 
     state.downloadedBlocks.isEmpty is true
-    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId0, blocks0)
+    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId0, blocksAtHeight0)
     state.downloadedBlocks.isEmpty is true
 
     state.batchIds.addAll(Seq(batchId0, batchId1))
-    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId1, blocks1)
+    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId1, blocksAtHeight1)
     state.batchIds.size is 2
     state.downloadedBlocks.size is 1
     state.pendingQueue.isEmpty is true
 
-    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId0, blocks0)
+    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId0, blocksAtHeight0)
     state.batchIds.isEmpty is true
     state.downloadedBlocks.isEmpty is true
-    val downloadedBlocks = (blocks0 ++ blocks1).map(b => (b.hash, DownloadedBlock(b, fromBroker)))
+
+    // the pending queue should include all mainchain blocks and necessary uncle blocks
+    var uncleSize = 0
+    val blocks = AVector.from(1 to 8).flatMap { height =>
+      val hashes      = blockFlow.getHashes(chainIndex, height).rightValue
+      val block       = blockFlow.getBlockUnsafe(hashes.head)
+      val uncleHashes = block.ghostUncleHashes.rightValue
+      uncleSize += uncleHashes.length
+      uncleHashes.map(blockFlow.getBlockUnsafe) :+ block
+    }
+    val downloadedBlocks = blocks.map(b => (b.hash, DownloadedBlock(b, fromBroker)))
+    downloadedBlocks.length is uncleSize + 8
     state.pendingQueue.toSeq is Seq.from(downloadedBlocks)
   }
 
@@ -1421,20 +1452,22 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     val batchId0          = BlockBatch(51, 100)
     val batchId1          = BlockBatch(101, 140)
     val blocks0           = AVector.fill(50)(blockGen(chainIndex).sample.get)
+    val blocksAtHeight0   = blocks0.map(b => BlocksAtHeight(b, AVector.empty))
     val blocks1           = AVector.fill(40)(blockGen(chainIndex).sample.get)
+    val blocksAtHeight1   = blocks1.map(b => BlocksAtHeight(b, AVector.empty))
     val fromBroker        = (state.originBroker, brokerInfo)
     val downloadedBlocks0 = blocks0.map(b => DownloadedBlock(b, fromBroker))
     val downloadedBlocks1 = blocks1.map(b => DownloadedBlock(b, fromBroker))
     state.batchIds.addAll(Seq(batchId0, batchId1))
 
-    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId0, blocks0)
+    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId0, blocksAtHeight0)
     state.pendingQueue.size is blocks0.length
     state.tryValidateMoreBlocks(acc, false)
     acc.toSeq is Seq.from(downloadedBlocks0)
     state.validating.size is acc.length
     state.pendingQueue.isEmpty is true
 
-    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId1, blocks1)
+    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId1, blocksAtHeight1)
     state.pendingQueue.size is blocks1.length
     state.tryValidateMoreBlocks(acc, false)
     acc.toSeq is Seq.from(downloadedBlocks0)
@@ -1461,11 +1494,12 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
     val state            = newState()
     val batchId          = BlockBatch(51, 100)
     val blocks           = AVector.fill(2)(emptyBlock(blockFlow, chainIndex))
+    val blocksAtHeight   = blocks.map(b => BlocksAtHeight(b, AVector.empty))
     val fromBroker       = (state.originBroker, brokerInfo)
     val downloadedBlocks = blocks.map(b => DownloadedBlock(b, fromBroker))
     state.batchIds.addOne(batchId)
 
-    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId, blocks)
+    state.onBlockDownloaded(state.originBroker, brokerInfo, batchId, blocksAtHeight)
     state.pendingQueue.size is downloadedBlocks.length
 
     state.tryValidateMoreBlocks(mutable.ArrayBuffer.empty, false)
@@ -1581,5 +1615,35 @@ class BlockFlowSynchronizerSpec extends AlephiumActorSpec {
         test(index, num)
       }
     }
+  }
+
+  behavior of "UncleBlocksCache"
+
+  it should "cache uncle blocks" in new SyncStatePerChainFixture with BlockGenerators {
+    val cache   = new SyncState.UncleBlocksCache(3, mutable.HashMap.empty, mutable.Queue.empty)
+    val blocks0 = AVector.fill(2)(blockGen(chainIndex).sample.get)
+    cache.getUncles(blocks0.map(_.hash)).isEmpty is true
+    cache.addUncles(blocks0)
+    cache.getUncles(blocks0.map(_.hash)) is blocks0
+
+    val blocks1 = AVector.fill(5)(blockGen(chainIndex).sample.get)
+    cache.getUncles(AVector(blocks0.head.hash, blocks1.head.hash)) is AVector(blocks0.head)
+    cache.addUncles(blocks1)
+    cache.getUncles(blocks1.map(_.hash)) is blocks1
+    cache.getUncles(AVector(blocks0.head.hash, blocks1.head.hash)) is AVector(
+      blocks0.head,
+      blocks1.head
+    )
+
+    val blocks2 = AVector.fill(3)(blockGen(chainIndex).sample.get)
+    cache.addUncles(blocks2)
+    val allBlocks0 = blocks0 ++ blocks1 ++ blocks2
+    cache.getUncles(allBlocks0.map(_.hash)) is allBlocks0
+
+    val blocks3 = AVector.fill(2)(blockGen(chainIndex).sample.get)
+    cache.addUncles(blocks3)
+    cache.getUncles(blocks0.map(_.hash)).isEmpty is true
+    val allBlocks1 = blocks1 ++ blocks2 ++ blocks3
+    cache.getUncles(allBlocks1.map(_.hash)) is allBlocks1
   }
 }

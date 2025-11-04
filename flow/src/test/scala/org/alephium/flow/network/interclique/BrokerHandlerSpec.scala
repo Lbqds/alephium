@@ -30,7 +30,7 @@ import org.scalacheck.Gen
 import org.alephium.flow.{AlephiumFlowActorSpec, FlowFixture}
 import org.alephium.flow.core.{maxForkDepth, BlockFlow}
 import org.alephium.flow.handler.{AllHandlers, FlowHandler, TestUtils, TxHandler}
-import org.alephium.flow.network.{CliqueManager, MaxRequestNum}
+import org.alephium.flow.network.{BlocksAtHeight, CliqueManager, MaxRequestNum}
 import org.alephium.flow.network.broker.{BrokerHandler => BaseBrokerHandler}
 import org.alephium.flow.network.broker.{InboundBrokerHandler => BaseInboundBrokerHandler}
 import org.alephium.flow.network.broker.{ChainTipInfo, ConnectionHandler, MisbehaviorManager}
@@ -895,12 +895,15 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
       brokerHandler ! BaseBrokerHandler.Received(
         BlocksAndUnclesByHeightsResponse(defaultRequestId, blockss)
       )
-      blockFlowSynchronizer.expectMsg(
-        BlockFlowSynchronizer.UpdateBlockDownloaded(
-          tasks.zipWithIndex.map { case (task, index) =>
-            (task, blockss(index), true)
-          }
-        )
+      blockFlowSynchronizer.expectMsg(getDownloadedBlocks(tasks, blockss))
+    }
+
+    def getDownloadedBlocks(tasks: AVector[BlockDownloadTask], blockss: AVector[AVector[Block]]) = {
+      BlockFlowSynchronizer.UpdateBlockDownloaded(
+        tasks.zipWithIndex.map { case (task, index) =>
+          val blocks = SyncV2Handler.validateBlocks(blockss(index), task)
+          (task, blocks)
+        }
       )
     }
 
@@ -1009,62 +1012,56 @@ class BrokerHandlerSpec extends AlephiumFlowActorSpec {
       BlocksAndUnclesByHeightsResponse(defaultRequestId, AVector(blocks))
     )
     eventually(brokerHandlerActor.pendingRequests.contains(defaultRequestId) is false)
-    blockFlowSynchronizer.expectMsg(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task0, blocks, true)))
-    )
+    blockFlowSynchronizer.expectMsg(getDownloadedBlocks(AVector(task0), AVector(blocks)))
 
     val task1 = task0.copy(toHeader = None)
     prepare(AVector(task1))
     brokerHandler ! BaseBrokerHandler.Received(
       BlocksAndUnclesByHeightsResponse(defaultRequestId, AVector(blocks))
     )
-    blockFlowSynchronizer.expectMsg(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task1, blocks, true)))
-    )
+    blockFlowSynchronizer.expectMsg(getDownloadedBlocks(AVector(task1), AVector(blocks)))
 
     val task2 = task0.copy(toHeader = Some(blocks.head.header))
     prepare(AVector(task2))
     brokerHandler ! BaseBrokerHandler.Received(
       BlocksAndUnclesByHeightsResponse(defaultRequestId, AVector(blocks))
     )
-    blockFlowSynchronizer.expectMsg(
-      BlockFlowSynchronizer.UpdateBlockDownloaded(AVector((task2, blocks, false)))
-    )
+    blockFlowSynchronizer.expectMsg(getDownloadedBlocks(AVector(task2), AVector(blocks)))
   }
 
   it should "validate blocks response" in new DownloadBlocksFixture {
-    var blockSize = 0
-    (0 until 4).foreach { _ =>
-      val uncleSize = Random.nextInt(3)
-      val blocks    = (0 to uncleSize).map(_ => emptyBlock(blockFlow, chainIndex))
-      blocks.foreach(block => addAndCheck(blockFlow, block))
-      blockSize += uncleSize + 1
+    val chainLength = 5
+    (0 until chainLength).foreach { _ =>
+      val blockSize = Random.nextInt(5) + 1
+      val blocks    = (0 until blockSize).map(_ => emptyBlock(blockFlow, chainIndex))
+      addAndCheck(blockFlow, blocks: _*)
+    }
+    val blockChain = blockFlow.getBlockChain(chainIndex)
+    val heights    = AVector.from(1 to chainLength)
+    val allBlocks  = blockChain.getBlocksWithUnclesByHeightsUnsafe(heights)
+
+    val allBlocksAtHeight = heights.map { height =>
+      val hashes = blockChain.getHashesUnsafe(height)
+      val blocks = hashes.map(blockChain.getBlockUnsafe)
+      BlocksAtHeight(blocks.head, blocks.tail)
     }
 
-    val blockchain    = blockFlow.getBlockChain(chainIndex)
-    val heights       = AVector.from(1 to 4)
-    val orderedBlocks = blockchain.getBlocksWithUnclesByHeightsUnsafe(heights)
-    orderedBlocks.length is blockSize
+    val toHeader = allBlocksAtHeight.last.mainChainBlock.header
+    val task0    = BlockDownloadTask(chainIndex, 1, chainLength, Some(toHeader))
+    SyncV2Handler.validateBlocks(allBlocks, task0) is Some(allBlocksAtHeight)
+    SyncV2Handler.validateBlocks(allBlocks.take(4), task0) is None
+    val block2 = allBlocksAtHeight(1).mainChainBlock
+    SyncV2Handler.validateBlocks(allBlocks.filter(_ != block2), task0) is None
 
-    val unorderedBlocks = heights.flatMap { height =>
-      val hashes = blockchain.getHashesUnsafe(height)
-      hashes.shuffle().map(blockchain.getBlockUnsafe)
-    }
-    unorderedBlocks.length is blockSize
-
-    val validToHeaders  = blockchain.getHashesUnsafe(4).map(blockchain.getBlockHeaderUnsafe)
-    val invalidToHeader = blockchain.getBlockHeaderUnsafe(blockchain.getHashesUnsafe(3).sample())
-
-    Seq(orderedBlocks, unorderedBlocks).foreach { blocks =>
-      SyncV2Handler.validateBlocks(blocks.take(3), 4, None) is false
-      SyncV2Handler.validateBlocks(blocks, 4, None) is true
-      SyncV2Handler.validateBlocks(blocks, 3, None) is false
-      SyncV2Handler.validateBlocks(blocks, 5, None) is false
-      validToHeaders.foreach(header =>
-        SyncV2Handler.validateBlocks(blocks, 4, Some(header)) is true
+    val task1   = task0.copy(toHeader = None)
+    val blocks4 = blockChain.getBlocksWithUnclesByHeightsUnsafe(AVector(4, 5)).init
+    SyncV2Handler.validateBlocks(allBlocks, task1) is Some(
+      allBlocksAtHeight.take(chainLength - 2) ++ AVector(
+        BlocksAtHeight(blocks4.head, blocks4.tail),
+        BlocksAtHeight(allBlocks.last, AVector.empty)
       )
-      SyncV2Handler.validateBlocks(blocks, 4, Some(invalidToHeader)) is false
-    }
+    )
+    SyncV2Handler.validateBlocks(allBlocks.tail :+ allBlocks.head, task1) is None
   }
 
   it should "check pending requests" in new SyncV2Fixture {

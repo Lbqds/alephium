@@ -67,7 +67,7 @@ object BlockFlowSynchronizer {
       responses: AVector[AVector[BlockHeader]]
   ) extends V2Command
   final case class UpdateBlockDownloaded(
-      result: AVector[(SyncState.BlockDownloadTask, AVector[Block], Boolean)]
+      result: AVector[(SyncState.BlockDownloadTask, Option[AVector[BlocksAtHeight]])]
   ) extends V2Command
   case object ContinueDownload extends V2Command
   final case class AddFlowData[T <: FlowData](datas: AVector[T], dataOrigin: DataOrigin)
@@ -271,7 +271,7 @@ trait SyncState { _: BlockFlowSynchronizer =>
   private[sync] def isNearSynced: Boolean = _isNearSynced
 
   def handleBlockDownloaded(
-      result: AVector[(BlockDownloadTask, AVector[Block], Boolean)]
+      result: AVector[(BlockDownloadTask, Option[AVector[BlocksAtHeight]])]
   ): Unit = {
     val broker: BrokerActor = ActorRefT(sender())
     getBrokerStatus(broker).foreach { status =>
@@ -312,20 +312,21 @@ trait SyncState { _: BlockFlowSynchronizer =>
   private def handleBlockDownloaded(
       broker: BrokerActor,
       brokerInfo: BrokerInfo,
-      result: AVector[(BlockDownloadTask, AVector[Block], Boolean)]
+      result: AVector[(BlockDownloadTask, Option[AVector[BlocksAtHeight]])]
   ): Unit = {
-    result.foreach { case (task, blocks, isValid) =>
+    result.foreach { case (task, blocksOpt) =>
       syncingChains(task.chainIndex).foreach { state =>
-        if (isValid) {
-          state.onBlockDownloaded(broker, brokerInfo, task.id, blocks)
-          if (state.isSkeletonFilled) clearMissedBlocks(state.chainIndex)
-        } else {
-          log.warning(
-            s"The broker ${brokerInfo.address} do not have the required blocks, " +
-              s"put back the task to the queue, chain: ${state.chainIndex}, task id: ${task.id}"
-          )
-          state.putBack(task)
-          handleMissedBlocks(state, task.id)
+        blocksOpt match {
+          case Some(blocks) =>
+            state.onBlockDownloaded(broker, brokerInfo, task.id, blocks)
+            if (state.isSkeletonFilled) clearMissedBlocks(state.chainIndex)
+          case None =>
+            log.warning(
+              s"The broker ${brokerInfo.address} do not have the required blocks, " +
+                s"put back the task to the queue, chain: ${state.chainIndex}, task id: ${task.id}"
+            )
+            state.putBack(task)
+            handleMissedBlocks(state, task.id)
         }
       }
     }
@@ -719,12 +720,17 @@ object SyncState {
   }
 
   final case class DownloadedBlock(block: Block, from: (BrokerActor, BrokerInfo))
+  final case class DownloadedBlocksAtHeight(
+      blocksAtHeight: BlocksAtHeight,
+      from: (BrokerActor, BrokerInfo)
+  )
 
   final class SyncStatePerChain(
       val originBroker: BrokerActor,
       val chainIndex: ChainIndex,
       val bestTip: ChainTip
-  ) extends LazyLogging {
+  )(implicit val networkConfig: NetworkSetting)
+      extends LazyLogging {
     private[sync] var nextFromHeight                                = ALPH.GenesisHeight
     private[sync] var skeletonHeightRange: Option[BlockHeightRange] = None
     private[sync] val batchIds  = mutable.SortedSet.empty[BlockBatch]
@@ -734,9 +740,10 @@ object SyncState {
     // may not be sorted by height. `downloadedBlocks` is used to sort the
     // downloaded blocks by height and place them into the `blockQueue`
     private[sync] val downloadedBlocks =
-      mutable.SortedMap.empty[BlockBatch, AVector[DownloadedBlock]]
-    private[sync] val pendingQueue = mutable.LinkedHashMap.empty[BlockHash, DownloadedBlock]
-    private[sync] var validating   = mutable.Set.empty[BlockHash]
+      mutable.SortedMap.empty[BlockBatch, AVector[DownloadedBlocksAtHeight]]
+    private[sync] val pendingQueue     = mutable.LinkedHashMap.empty[BlockHash, DownloadedBlock]
+    private[sync] var validating       = mutable.Set.empty[BlockHash]
+    private[sync] val uncleBlocksCache = UncleBlocksCache()
 
     private def addNewTask(task: BlockDownloadTask): Unit = {
       batchIds.addOne(task.id)
@@ -796,14 +803,24 @@ object SyncState {
         from: BrokerActor,
         info: BrokerInfo,
         batchId: BlockBatch,
-        blocks: AVector[Block]
+        blocks: AVector[BlocksAtHeight]
     ): Unit = {
       if (batchIds.contains(batchId)) {
         logger.debug(s"Add the downloaded blocks $batchId to the buffer, chain index: $chainIndex")
         val fromBroker = (from, info)
-        downloadedBlocks.addOne((batchId, blocks.map(b => DownloadedBlock(b, fromBroker))))
+        downloadedBlocks.addOne((batchId, blocks.map(b => DownloadedBlocksAtHeight(b, fromBroker))))
         moveToBlockQueue()
       }
+    }
+
+    private def getMainChainAndUncleBlocks(
+        downloaded: DownloadedBlocksAtHeight
+    ): AVector[DownloadedBlock] = {
+      val blocksAtHeight = downloaded.blocksAtHeight
+      val mainChainBlock = blocksAtHeight.mainChainBlock
+      val uncleHashes    = mainChainBlock.ghostUncleHashes.getOrElse(AVector.empty)
+      val blocks         = uncleBlocksCache.getUncles(uncleHashes) :+ mainChainBlock
+      blocks.map(b => DownloadedBlock(b, downloaded.from))
     }
 
     @scala.annotation.tailrec
@@ -812,7 +829,12 @@ object SyncState {
       // we will wait for the first task to complete and move all the downloaded blocks into the `blockQueue` in height order
       downloadedBlocks.headOption match {
         case Some((batchId, blocks)) if batchIds.headOption.contains(batchId) =>
-          pendingQueue.addAll(blocks.map(b => (b.block.hash, b)))
+          val blockAndUncles = blocks.flatMap { downloaded =>
+            val blocks = getMainChainAndUncleBlocks(downloaded)
+            uncleBlocksCache.addUncles(downloaded.blocksAtHeight.sideBlocks)
+            blocks
+          }
+          pendingQueue.addAll(blockAndUncles.map(b => (b.block.hash, b)))
           batchIds.remove(batchId)
           downloadedBlocks.remove(batchId)
           moveToBlockQueue()
@@ -902,8 +924,42 @@ object SyncState {
   }
 
   object SyncStatePerChain {
-    def apply(chainIndex: ChainIndex, bestTip: ChainTip, broker: BrokerActor): SyncStatePerChain =
+    def apply(chainIndex: ChainIndex, bestTip: ChainTip, broker: BrokerActor)(implicit
+        config: NetworkSetting
+    ): SyncStatePerChain =
       new SyncStatePerChain(broker, chainIndex, bestTip)
+  }
+
+  // UncleBlocksCache only stores the side blocks of the latest 7 heights,
+  // allowing us to send only the necessary uncle blocks to the DependencyHandler.
+  final class UncleBlocksCache(
+      private val heightsNum: Int,
+      private var blocksByHash: mutable.HashMap[BlockHash, Block],
+      private var blocksByHeight: mutable.Queue[AVector[BlockHash]]
+  ) {
+    def getUncles(hashes: AVector[BlockHash]): AVector[Block] = {
+      hashes.fold(AVector.ofCapacity[Block](hashes.length)) { case (acc, hash) =>
+        blocksByHash.get(hash) match {
+          case Some(block) => acc :+ block
+          case None        => acc
+        }
+      }
+    }
+
+    def addUncles(blocks: AVector[Block]): Unit = {
+      blocksByHeight.enqueue(blocks.map(_.hash))
+      blocks.foreach(block => blocksByHash.addOne(block.hash -> block))
+      if (blocksByHeight.size > heightsNum) {
+        val removed = blocksByHeight.dequeue()
+        removed.foreach(blocksByHash.remove)
+      }
+    }
+  }
+
+  object UncleBlocksCache {
+    def apply(): UncleBlocksCache = {
+      new UncleBlocksCache(ALPH.MaxGhostUncleAge, mutable.HashMap.empty, mutable.Queue.empty)
+    }
   }
 
   final class CircularSelector[T](val elements: scala.collection.Seq[T], index: Int) {

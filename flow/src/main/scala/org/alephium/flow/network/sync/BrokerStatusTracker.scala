@@ -19,7 +19,7 @@ package org.alephium.flow.network.sync
 import scala.collection.mutable
 import scala.util.Random
 
-import org.alephium.flow.network.{MaxRequestNum, SimpleRateLimiter}
+import org.alephium.flow.network.{BlocksAtHeight, MaxRequestNum, SimpleRateLimiter}
 import org.alephium.flow.network.broker.BrokerHandler
 import org.alephium.flow.network.sync.SyncState.{BlockBatch, BlockDownloadTask}
 import org.alephium.flow.setting.NetworkSetting
@@ -79,11 +79,11 @@ object BrokerStatusTracker {
     }
 
     def handleBlockDownloaded(
-        result: AVector[(BlockDownloadTask, AVector[Block], Boolean)]
+        result: AVector[(BlockDownloadTask, Option[AVector[BlocksAtHeight]])]
     ): Unit = {
-      result.foreach { case (task, _, isValid) =>
+      result.foreach { case (task, blocks) =>
         removePendingTask(task)
-        if (!isValid) addMissedBlocks(task.chainIndex, task.id)
+        if (blocks.isEmpty) addMissedBlocks(task.chainIndex, task.id)
       }
     }
 

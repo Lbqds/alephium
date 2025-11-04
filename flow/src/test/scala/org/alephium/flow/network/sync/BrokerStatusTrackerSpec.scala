@@ -226,14 +226,12 @@ class BrokerStatusTrackerSpec extends AlephiumFlowActorSpec with Generators {
     status.addPendingTask(task0)
     status.addPendingTask(task1)
 
-    val blockDownloaded0 = AVector((task0, AVector.empty[Block], true))
-    status.handleBlockDownloaded(blockDownloaded0)
+    status.handleBlockDownloaded(AVector((task0, Some(AVector.empty))))
     status.pendingTasks.contains(task0) is false
     status.pendingTasks.contains(task1) is true
     status.missedBlocks.isEmpty is true
 
-    val blockDownloaded1 = AVector((task1, AVector.empty[Block], false))
-    status.handleBlockDownloaded(blockDownloaded1)
+    status.handleBlockDownloaded(AVector((task1, None)))
     status.pendingTasks.contains(task0) is false
     status.pendingTasks.contains(task1) is false
     status.missedBlocks.keys.toSeq is Seq(chainIndex)
