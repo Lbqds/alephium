@@ -17,15 +17,15 @@
 package org.alephium.tools
 
 import java.nio.file.Paths
-import java.time.{Instant, ZonedDateTime, ZoneOffset}
-import java.time.format.DateTimeFormatter
+
+import scala.collection.mutable
 
 import org.alephium.flow.core.BlockFlow
 import org.alephium.flow.io.Storages
 import org.alephium.flow.setting.{AlephiumConfig, Configs}
 import org.alephium.io.RocksDBSource.ProdSettings
 import org.alephium.protocol.model.{Address, Block}
-import org.alephium.util.{Duration, Env, TimeStamp}
+import org.alephium.util.{Env, TimeStamp}
 
 // scalastyle:off magic.number
 @SuppressWarnings(Array("org.wartremover.warts.IterableOps", "org.wartremover.warts.OptionPartial"))
@@ -39,71 +39,51 @@ object MinerStats extends App {
     Storages.createUnsafe(dbPath, "db", ProdSettings.writeOptions)(config.broker, config.node)
   private val blockFlow = BlockFlow.fromStorageUnsafe(config, storages)
 
-  private val miners = Array(
-    Address
-      .fromBase58("1PZonix2UoaguUfbbBnWevk4vod1m9MeJXBnkr7aqN76")
-      .getOrElse(throw new RuntimeException("invalid address")),
-    Address
-      .fromBase58("15AkQjovigzbQXGoHekLMb1prs1MTyRXFKSLw8VRy4quJ")
-      .getOrElse(throw new RuntimeException("invalid address")),
-    Address
-      .fromBase58("1LzhJdLG1SMMCPqRpnUJRs5wgLqRYcWZcRdG8baLeFbT")
-      .getOrElse(throw new RuntimeException("invalid address")),
-    Address
-      .fromBase58("1EbUwQWRfuXnEkvPTYxubp5cYsGo3foAMA9g9zvNQNSwW")
-      .getOrElse(throw new RuntimeException("invalid address"))
-  )
+  private val fromTs = TimeStamp.unsafe(1762351200000L)
+  private val toTs   = TimeStamp.unsafe(1762372800000L)
 
-  stats(miners)
+  final class MinerStat(val toGroup: Int, val blockCounts: Array[Int]) {
+    def add(block: Block): Unit = {
+      assert(block.chainIndex.to.value == toGroup)
+      val index = block.chainIndex.from.value
+      blockCounts(index) += 1
+    }
 
-  storages.close() match {
-    case Left(error) => throw error
-    case Right(_)    =>
+    def stat(): String = {
+      blockCounts.zipWithIndex
+        .map { case (count, fromGroup) =>
+          s"$fromGroup->$toGroup:$count"
+        }
+        .mkString("; ")
+    }
+  }
+  object MinerStat {
+    def apply(toGroup: Int): MinerStat = {
+      new MinerStat(toGroup, Array.fill(config.broker.groups)(0))
+    }
   }
 
-  private def stats(miners: Array[Address]): Unit = {
-    config.broker.chainIndexes.foreach { chainIndex =>
-      val miner       = miners(chainIndex.to.value)
-      val latestBlock = blockFlow.getBlockChain(chainIndex).getBestTipUnsafe()
-      var fromBlock   = blockFlow.getBlockUnsafe(latestBlock)
-      (0 until 20).foreach { _ =>
-        fromBlock = stats(fromBlock, miner)
+  private val allBlocks = blockFlow.getHeightedBlocks(fromTs, toTs).toOption.get
+  private val allMiners = mutable.HashMap.empty[Address, MinerStat]
+
+  allBlocks.foreach { case (chainIndex, blocksPerChain) =>
+    blocksPerChain.foreach { case (block, _) =>
+      val address = Address.from(block.minerLockupScript)
+      allMiners.get(address) match {
+        case Some(stat) => stat.add(block)
+        case None =>
+          assert(address.groupIndex(config.broker) == chainIndex.to)
+          val stat = MinerStat(chainIndex.to.value)
+          stat.add(block)
+          allMiners.put(address, stat)
       }
     }
   }
 
-  private def stats(fromBlock: Block, miner: Address): Block = {
-    var currentBlock = fromBlock
-    while (currentBlock.minerLockupScript != miner.lockupScript) {
-      currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
-    }
-
-    val toTimestamp              = currentBlock.timestamp
-    var fromTimestamp: TimeStamp = toTimestamp
-    currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
-    while (currentBlock.minerLockupScript == miner.lockupScript) {
-      fromTimestamp = currentBlock.timestamp
-      currentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
-    }
-    val parentBlock = blockFlow.getBlockUnsafe(currentBlock.parentHash)
-    val chainIndex  = fromBlock.chainIndex
-    val from = if (toTimestamp == fromTimestamp) {
-      fromTimestamp
-    } else {
-      toTimestamp.minusUnsafe(Duration.ofSecondsUnsafe(8))
-    }
-    if (toTimestamp > fromTimestamp) {
-      print(
-        s"miner ${miner.toBase58} mining from ${toUtc(from)} to ${toUtc(toTimestamp)} on ${chainIndex.from.value -> chainIndex.to.value}\n"
-      )
-    }
-    parentBlock
+  allMiners.foreachEntry { case (address, stat) =>
+    print(s"address: $address\n")
+    print(s"${stat.stat()}\n")
   }
 
-  private def toUtc(ts: TimeStamp): String = {
-    val utcTime: ZonedDateTime = Instant.ofEpochMilli(ts.millis).atZone(ZoneOffset.UTC)
-
-    val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneOffset.UTC)
-    formatter.format(utcTime)
-  }
+  storages.closeUnsafe()
 }
