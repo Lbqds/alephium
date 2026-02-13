@@ -19,6 +19,7 @@ package org.alephium.protocol.vm
 import scala.annotation.{switch, tailrec}
 
 import akka.util.ByteString
+import com.typesafe.scalalogging.LazyLogging
 
 import org.alephium.protocol.model.{minimalContractStorageDeposit, Address, ContractId, TokenId}
 import org.alephium.protocol.vm.{createContractEventIndex, destroyContractEventIndex}
@@ -27,7 +28,7 @@ import org.alephium.serde.{avectorSerde, deserialize}
 import org.alephium.util.{AVector, Bytes, U256}
 
 // scalastyle:off number.of.methods file.size.limit
-abstract class Frame[Ctx <: StatelessContext] {
+abstract class Frame[Ctx <: StatelessContext] extends LazyLogging {
   var pc: Int
   def obj: ContractObj[Ctx]
   def opStack: Stack[Val]
@@ -189,6 +190,14 @@ abstract class Frame[Ctx <: StatelessContext] {
   @tailrec final def execute(): ExeResult[Option[Frame[Ctx]]] = {
     if (pc < pcMax) {
       val instr = method.instrs(pc)
+      obj.contractIdOpt match {
+        case Some(contractId) =>
+          logger.info(
+            s"============== execute ${instr} in contract ${Address.contract(contractId)}"
+          )
+        case None =>
+          logger.info(s"============== execute ${instr} in TxScript")
+      }
       (instr.code: @switch) match {
         case 0 => checkExeResult(callLocal(instr.asInstanceOf[CallLocal].index))
         case 1 => checkExeResult(callExternal(instr.asInstanceOf[CallExternal].index))
