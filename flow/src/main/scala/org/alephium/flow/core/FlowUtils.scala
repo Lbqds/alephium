@@ -402,7 +402,11 @@ trait FlowUtils
       miner: LockupScript.Asset
   ): IOResult[BlockFlowTemplate] = {
     templateValidator.validateTemplate(chainIndex, template, this) match {
-      case Left(Left(error)) => Left(error)
+      case Left(Left(error)) =>
+        logger.error(
+          s"==== failed to validate template due to io error $error, template: $template"
+        )
+        Left(error)
       case Left(Right(error)) =>
         error match {
           case _: InvalidGhostUncleStatus =>

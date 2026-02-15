@@ -418,7 +418,7 @@ trait BlockFlowUpdaterDanubeState extends IOBaseActor {
           case Right(rebuildTemplates) =>
             ViewHandler.BestDepsUpdatedDanube(chainIndex, rebuildTemplates)
           case Left(error) =>
-            log.error(s"Failed to update best view: $error")
+            log.error(s"Failed to update best view for chain $chainIndex: $error")
             ViewHandler.BestDepsUpdateFailedDanube(chainIndex)
         }
       }.pipeTo(self)
